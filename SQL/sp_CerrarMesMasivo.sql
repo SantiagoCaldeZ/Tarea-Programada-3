@@ -1,7 +1,7 @@
 CREATE OR ALTER PROCEDURE dbo.usp_CerrarMesMasivo
 (
-    @inFechaCorte     DATE,   -- Último día del mes que termina
-    @outResultCode    INT OUTPUT
+    @inFechaCorte   DATE,   -- Último día del mes que termina
+    @outResultCode  INT OUTPUT
 )
 AS
 BEGIN
@@ -22,16 +22,7 @@ BEGIN TRY
     END;
 
     ----------------------------------------------------------------------
-    -- 1) Cerrar facturas pagadas del mes
-    ----------------------------------------------------------------------
-    UPDATE f
-    SET f.estado = 'Cerrada'
-    FROM dbo.Factura f
-    WHERE f.estado = 'Pagada'
-      AND f.fecha <= @inFechaCorte;
-
-    ----------------------------------------------------------------------
-    -- 2) Obtener lecturas más recientes del mes
+    -- 1) Obtener lecturas más recientes a la fecha de corte
     ----------------------------------------------------------------------
     ;WITH UltLect AS
     (
@@ -39,18 +30,24 @@ BEGIN TRY
             m.numeroMedidor,
             m.valor,
             m.fecha,
-            ROW_NUMBER() OVER (PARTITION BY m.numeroMedidor ORDER BY m.fecha DESC) AS rn
-        FROM dbo.MovMedidor m
+            ROW_NUMBER() OVER (
+                PARTITION BY m.numeroMedidor
+                ORDER BY m.fecha DESC
+            ) AS rn
+        FROM dbo.MovMedidor AS m
         WHERE m.fecha <= @inFechaCorte
           AND m.idTipoMovimientoLecturaMedidor = 1   -- solo lecturas
     )
-    SELECT numeroMedidor, valor
+    SELECT
+        numeroMedidor,
+        valor
     INTO #LecturasBase
     FROM UltLect
     WHERE rn = 1;
 
     ----------------------------------------------------------------------
-    -- 3) Insertar lecturas base del próximo mes (día 1)
+    -- 2) Insertar lecturas base del próximo mes (día 1)
+    --    Solo para medidores que aún NO tengan una lectura ese día.
     ----------------------------------------------------------------------
     DECLARE @fechaInicioMes DATE = DATEADD(DAY, 1, @inFechaCorte);
 
@@ -65,17 +62,25 @@ BEGIN TRY
         saldoResultante
     )
     SELECT
-        (SELECT ISNULL(MAX(id),0) FROM dbo.MovMedidor) 
-           + ROW_NUMBER() OVER (ORDER BY lb.numeroMedidor),
+        (SELECT ISNULL(MAX(id), 0) FROM dbo.MovMedidor)
+            + ROW_NUMBER() OVER (ORDER BY lb.numeroMedidor),
         lb.numeroMedidor,
-        1,                   -- lectura base (lectura)
+        1,                    -- lectura base (lectura)
         lb.valor,
         p.id,
         @fechaInicioMes,
         NULL
-    FROM #LecturasBase lb
-    JOIN dbo.Propiedad p
-        ON p.numeroMedidor = lb.numeroMedidor;
+    FROM #LecturasBase AS lb
+    JOIN dbo.Propiedad AS p
+        ON p.numeroMedidor = lb.numeroMedidor
+    WHERE NOT EXISTS
+    (
+        SELECT 1
+        FROM dbo.MovMedidor AS m2
+        WHERE m2.numeroMedidor = lb.numeroMedidor
+          AND m2.fecha = @fechaInicioMes
+          AND m2.idTipoMovimientoLecturaMedidor = 1
+    );
 
     ----------------------------------------------------------------------
     COMMIT TRAN;
@@ -88,8 +93,14 @@ BEGIN CATCH
 
     INSERT INTO dbo.DBErrors
     (
-        UserName, Number, State, Severity, [Line],
-        [Procedure], Message, DateTime
+        UserName,
+        Number,
+        State,
+        Severity,
+        [Line],
+        [Procedure],
+        Message,
+        DateTime
     )
     VALUES
     (
