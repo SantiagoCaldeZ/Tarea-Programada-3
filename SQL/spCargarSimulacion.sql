@@ -322,20 +322,36 @@ BEGIN
             M.numeroFinca,
             M.tipoMedioPagoId,
             M.numeroReferencia,
-            NULL,              -- idFactura se llenará en otros SPs
+            NULL,
             M.fechaOperacion,
-            NULL               -- monto calculado luego
+            NULL
         FROM MovPago AS M
         WHERE NOT EXISTS
         (
-            SELECT
-                1
+            SELECT 1
             FROM dbo.Pago AS p
             WHERE p.numeroReferencia = M.numeroReferencia
         );
 
         ----------------------------------------------------------------------
+        -- 7) Cambios de valor fiscal de propiedad (del XML)
+        ----------------------------------------------------------------------
+        ;WITH Cambios AS
+        (
+            SELECT
+                C.value('@numeroFinca','nvarchar(64)') AS numeroFinca,
+                C.value('@nuevoValor','money') AS nuevoValor
+            FROM @xml.nodes('/Operaciones/FechaOperacion/CambiosValorPropiedad/Cambio') AS T(C)
+        )
+        UPDATE p
+        SET p.valorFiscal = c.nuevoValor
+        FROM dbo.Propiedad p
+        JOIN Cambios c ON c.numeroFinca = p.numeroFinca;
+
+
+        ----------------------------------------------------------------------
         COMMIT TRAN;
+
     END TRY
     BEGIN CATCH
         IF (XACT_STATE() <> 0)
