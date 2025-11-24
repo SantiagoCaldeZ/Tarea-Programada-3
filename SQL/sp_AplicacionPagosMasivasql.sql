@@ -1,5 +1,9 @@
-﻿CREATE OR ALTER PROCEDURE dbo.usp_AplicacionPagosMasiva
-(
+﻿SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER   PROCEDURE [dbo].[usp_AplicacionPagosMasiva]
+    (
     @inFechaCorte DATE,
     @outResultCode INT OUTPUT
 )
@@ -8,77 +12,102 @@ BEGIN
     SET NOCOUNT ON;
     SET @outResultCode = 0;
 
-BEGIN TRY
+    DECLARE @PagosNoFactura TABLE
+    (
+        idPago INT PRIMARY KEY
+        ,
+        numeroFinca NVARCHAR(50)
+        ,
+        monto MONEY
+        ,
+        idFacturaActual INT
+    );
+
+    BEGIN TRY
+
+    -- asignar factura pendiente más vieja
+    INSERT INTO @PagosNoFactura
+        (
+        idPago
+        ,numeroFinca
+        ,monto
+        ,idFacturaActual
+        )
+    SELECT
+        P.id
+        , P.numeroFinca
+        , P.monto
+        , P.idFactura
+    FROM dbo.Pago AS P
+    WHERE 
+        (P.idFactura IS NULL)
+        AND (P.fecha <= @inFechaCorte);
+
     BEGIN TRAN;
 
-    ----------------------------------------------------------------------
-    -- 1) PAGOS SIN FACTURA ASOCIADA → asignar factura pendiente más vieja
-    ----------------------------------------------------------------------
-    SELECT 
-        p.id          AS idPago,
-        p.numeroFinca,
-        p.monto,
-        p.idFactura   AS idFacturaActual
-    INTO #PagosNoFactura
-    FROM dbo.Pago p
-    WHERE p.idFactura IS NULL
-      AND p.fecha <= @inFechaCorte;
+    -- Asignar factura pendiente más vieja 
+    UPDATE PNF
+    SET PNF.idFacturaActual = F.id
+    FROM @PagosNoFactura AS PNF
 
-    -- Asignar factura pendiente más vieja
-    UPDATE pnf
-    SET pnf.idFacturaActual = f.id
-    FROM #PagosNoFactura pnf
-    CROSS APPLY (
-        SELECT TOP 1 f.id
-        FROM dbo.Factura f
-        JOIN dbo.Propiedad pr ON pr.id = f.idPropiedad
-        WHERE pr.numeroFinca = pnf.numeroFinca
-          AND f.estado = 1            -- Pendiente
-          AND f.totalFinal > 0
-        ORDER BY f.fecha ASC
-    ) f;
+    CROSS APPLY ( --cross aply se va a utilizar para encontar la factura pendiente mas antigua
+        SELECT TOP 1
+            F.id
+        FROM dbo.Factura AS F
+            JOIN dbo.Propiedad AS PR ON PR.id = F.idPropiedad
+        WHERE 
+            (PR.numeroFinca = PNF.numeroFinca)
+            AND (F.estado = 1) -- Pendiente
+            AND (F.totalFinal > 0)
+        ORDER BY F.fecha ASC
+    ) AS F;
 
-    -- Reflejar asignación en tabla Pago
-    UPDATE p
-    SET p.idFactura = pnf.idFacturaActual
-    FROM dbo.Pago p
-    JOIN #PagosNoFactura pnf ON pnf.idPago = p.id;
+    -- Reflejar asignación en tabla Pago 
+    UPDATE P
+    SET P.idFactura = PNF.idFacturaActual
+    FROM dbo.Pago AS P
+        JOIN @PagosNoFactura AS PNF ON PNF.idPago = P.id
+    WHERE (P.idFactura IS NULL); -- Solo actualizar los que no tenían factura
 
+    -- 2 pagos aplicables descontar del totalFinal 
+    UPDATE F
+    SET F.totalFinal = F.totalFinal - P.monto
+    FROM dbo.Factura AS F
+        JOIN dbo.Pago AS P ON P.idFactura = F.id
+    WHERE (P.fecha <= @inFechaCorte)
+        AND (F.estado = 1); -- Solo descontar de facturas pendientes
 
-    ----------------------------------------------------------------------
-    -- 2) PAGOS APLICABLES → descontar del totalFinal
-    ----------------------------------------------------------------------
-    UPDATE f
-    SET f.totalFinal = f.totalFinal - p.monto
-    FROM dbo.Factura f
-    JOIN dbo.Pago p ON p.idFactura = f.id
-    WHERE p.fecha <= @inFechaCorte;
-
-
-    ----------------------------------------------------------------------
-    -- 3) FACTURAS EN CERO O NEGATIVO → marcar pagadas
-    ----------------------------------------------------------------------
+    -- 3 facturas en 0 o negativas marcar pagadas 
     UPDATE dbo.Factura
     SET estado = 2      -- Pagado normal
-    WHERE totalFinal <= 0
-      AND estado = 1;
+    WHERE (totalFinal <= 0)
+        AND (estado = 1);
 
-
-    ----------------------------------------------------------------------
-    -- 4) CREAR COMPROBANTE DE PAGO
-    ----------------------------------------------------------------------
-    INSERT INTO dbo.ComprobantePago (idPago, fecha, monto, numeroReferencia)
-    SELECT p.id, p.fecha, p.monto, p.numeroReferencia
-    FROM dbo.Pago p
-    WHERE p.fecha <= @inFechaCorte;
+    -- 4 creacion del comprobante
+    INSERT INTO dbo.ComprobantePago
+        (
+        idPago
+        ,fecha
+        ,monto
+        ,numeroReferencia
+        )
+    SELECT
+        P.id
+        , P.fecha
+        , P.monto
+        , P.numeroReferencia
+    FROM dbo.Pago AS P
+    WHERE (P.fecha <= @inFechaCorte); -- Se insertan los comprobantes solo una vez
 
     COMMIT TRAN;
+
 END TRY
 BEGIN CATCH
     IF (XACT_STATE() <> 0)
         ROLLBACK TRAN;
 
     SET @outResultCode = 70001;
+    
+    THROW;
 END CATCH
 END;
-GO
