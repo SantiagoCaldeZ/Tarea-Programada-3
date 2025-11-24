@@ -1,5 +1,9 @@
-CREATE OR ALTER PROCEDURE dbo.usp_CalculoInteresesMasivo
-(
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER   PROCEDURE [dbo].[usp_CalculoInteresesMasivo]
+    (
     @inFechaCorte   DATE,
     @outResultCode  INT OUTPUT
 )
@@ -8,12 +12,12 @@ BEGIN
     SET NOCOUNT ON;
     SET @outResultCode = 0;
 
-    ----------------------------------------------------------------------
-    -- 0) Validaciones simples (fuera de TRY)
-    ----------------------------------------------------------------------
+    -- 0) Validaciones simples
+
     IF @inFechaCorte IS NULL
     BEGIN
-        SET @outResultCode = 61001;   -- fecha de corte inv�lida
+        SET @outResultCode = 61001;
+        -- fecha de corte inválida
         RETURN;
     END;
 
@@ -21,157 +25,147 @@ BEGIN
     DECLARE @tasaMensual DECIMAL(6,5);
     DECLARE @tasaDiaria  DECIMAL(18,10);
 
-    ----------------------------------------------------------------------
-    -- 1) CC de InteresesMoratorios
-    ----------------------------------------------------------------------
+    DECLARE @FacturasMora TABLE
+    (
+        idFactura INT PRIMARY KEY
+        ,
+        idPropiedad INT
+        ,
+        totalOriginal MONEY
+        ,
+        diasMora INT
+        ,
+        interesTeorico MONEY
+    );
+
+    BEGIN TRY
+    -- 1 Obtener parámetros para cálculo (CC y Tasa)
+
     SELECT @idCC = c.id
     FROM dbo.CC AS c
-    WHERE c.nombre = N'InteresesMoratorios';
+    WHERE (c.nombre = N'InteresesMoratorios');
 
-    IF @idCC IS NULL
-    BEGIN
-        SET @outResultCode = 61002;   -- CC de intereses no configurado
-        RETURN;
-    END;
-
-    ----------------------------------------------------------------------
-    -- 2) Obtener tasa mensual y convertir a diaria
-    --    (ejemplo: 0.04 mensual / 30 d�as) :contentReference[oaicite:2]{index=2}
-    ----------------------------------------------------------------------
-    SELECT @tasaMensual = cim.ValorPorcentual
-    FROM dbo.CC_InteresesMoratorios AS cim
-    WHERE cim.id = @idCC;
-
-    IF @tasaMensual IS NULL
+    IF (@idCC IS NULL)
     BEGIN
         SET @outResultCode = 61002;
+        -- CC de intereses no configurado
         RETURN;
     END;
 
-    SET @tasaDiaria = @tasaMensual / 30.0;
+    -- Obtener tasa y convertir a diaria
+    SELECT @tasaMensual = TRY_CONVERT(DECIMAL(6,5), p.valor)
+    FROM dbo.ParametroSistema AS p
+    WHERE (p.clave = N'TasaInteresMoratorio');
 
-    ----------------------------------------------------------------------
-    -- 3) C�lculo de intereses (con transacci�n)
-    ----------------------------------------------------------------------
-    BEGIN TRY
-        BEGIN TRAN;
+    -- Se asume un mes de 30 días para el cálculo de la tasa diaria
+    SET @tasaDiaria = @tasaMensual / 30.0; 
 
-        ------------------------------------------------------------------
-        -- 3.1 Facturas pendientes y vencidas a la fecha
-        ------------------------------------------------------------------
-        ;WITH FacturasConMora AS
+    -- 2 Identificar y calcular intereses de facturas en mora 
+    INSERT INTO @FacturasMora
         (
-            SELECT 
-                  f.id            AS idFactura
-                , f.idPropiedad
-                , f.totalOriginal
-                , DATEDIFF(DAY, f.fechaVenc, @inFechaCorte) AS diasMora
-            FROM dbo.Factura AS f
-            WHERE f.estado    = 1              -- 1 = Pendiente :contentReference[oaicite:3]{index=3}
-              AND f.fechaVenc < @inFechaCorte
+        idFactura
+        ,idPropiedad
+        ,totalOriginal
+        ,diasMora
+        ,interesTeorico
         )
-        SELECT
-              idFactura
-            , idPropiedad
-            , totalOriginal
-            , diasMora
-        INTO #FacturasMora
-        FROM FacturasConMora
-        WHERE diasMora > 0;
+    SELECT
+        f.id,
+        f.idPropiedad,
+        f.totalOriginal,
+        DATEDIFF(DAY, f.fechaVenc, @inFechaCorte),
+        -- Cálculo: monto_base * tasa_diaria * días_mora
+        (f.totalOriginal * @tasaDiaria * DATEDIFF(DAY, f.fechaVenc, @inFechaCorte))
+    FROM dbo.Factura AS f
+    WHERE 
+        (f.estado = 3) -- Solo facturas Vencidas (Mora)
+        AND (f.fechaVenc < @inFechaCorte) -- Que la fecha de vencimiento haya pasado
+        AND (f.totalOriginal > 0);                  -- Solo facturas con saldo base
 
-        ------------------------------------------------------------------
-        -- 3.2 Insertar SOLO el inter�s incremental
-        ------------------------------------------------------------------
-        INSERT INTO dbo.DetalleFactura
+    BEGIN TRAN;
+
+    -- Subconsulta para Intereses Acumulados (si ya se había aplicado el CC)
+    ;WITH
+        InteresAcumulado
+        AS
         (
-              idFactura
-            , idCC
-            , descripcion
-            , monto
-        )
-        SELECT
-              fm.idFactura
-            , @idCC
-            , N'Intereses por mora (' 
-                + CAST(fm.diasMora AS NVARCHAR(4)) 
-                + N' d�as)'
-            , CAST(
-                    theo.interesTeorico 
-                  - ISNULL(ia.interesAcumulado, 0.0)
-              AS MONEY)
-        FROM #FacturasMora AS fm
-        CROSS APPLY
-        (
-            -- Inter�s TE�RICO al d�a @inFechaCorte
-            SELECT 
-                CAST(
-                    fm.totalOriginal * @tasaDiaria * fm.diasMora
-                AS MONEY) AS interesTeorico
-        ) AS theo
-        LEFT JOIN
-        (
-            -- Inter�s YA COBRADO para este CC en cada factura
             SELECT
-                  df.idFactura
-                , SUM(df.monto) AS interesAcumulado
+                df.idFactura
+            , SUM(df.monto) AS interesAcumulado
             FROM dbo.DetalleFactura AS df
-            WHERE df.idCC = @idCC
+            WHERE (df.idCC = @idCC)
             GROUP BY df.idFactura
-        ) AS ia
-            ON ia.idFactura = fm.idFactura
-        WHERE theo.interesTeorico > ISNULL(ia.interesAcumulado, 0.0);
+        )
+    -- Insertar los nuevos intereses
+    INSERT INTO dbo.DetalleFactura
+        (
+        idFactura
+        , idCC
+        , monto
+        )
+    SELECT
+        fm.idFactura
+        , @idCC
+        , (fm.interesTeorico - ISNULL(ia.interesAcumulado, 0.0))
+    -- Solo la diferencia
+    FROM @FacturasMora AS fm
+        LEFT JOIN InteresAcumulado AS ia --en este caso el left join hace que las facturas nuevas en mora sean incluidas pero su interes acumulado sera nulo
+        ON ia.idFactura = fm.idFactura
+    -- Solo insertar si el nuevo interés calculado supera el acumulado (o si no existe)
+    WHERE (fm.interesTeorico > ISNULL(ia.interesAcumulado, 0.0));
 
-        ------------------------------------------------------------------
-        -- 3.3 Recalcular totalFinal SOLO de facturas afectadas
-        ------------------------------------------------------------------
-        ;WITH Totales AS
+    --Recalcular totalFinal de facturas afectadas 
+    ;WITH
+        Totales
+        AS
         (
             SELECT
-                  df.idFactura
-                , SUM(df.monto) AS totalDetalle
+                df.idFactura
+            , SUM(df.monto) AS totalDetalle
             FROM dbo.DetalleFactura AS df
             GROUP BY df.idFactura
         )
-        UPDATE f
-        SET f.totalFinal = f.totalOriginal + ISNULL(t.totalDetalle, 0.0)
-        FROM dbo.Factura AS f
-        JOIN #FacturasMora AS fm
-             ON fm.idFactura = f.id
+    UPDATE f
+    SET f.totalFinal = f.totalOriginal + ISNULL(t.totalDetalle, 0.0)
+    FROM dbo.Factura AS f
+        JOIN @FacturasMora AS fm
+        ON fm.idFactura = f.id
         LEFT JOIN Totales AS t
-             ON t.idFactura = f.id;
+        ON t.idFactura = f.id;
 
-        DROP TABLE #FacturasMora;
+    COMMIT TRAN;
 
-        COMMIT TRAN;
-    END TRY
-    BEGIN CATCH
-        IF XACT_STATE() <> 0
-            ROLLBACK TRAN;
+END TRY
+BEGIN CATCH
+    IF (XACT_STATE() <> 0)
+        ROLLBACK TRAN;
 
-        INSERT INTO dbo.DBErrors
+    -- Inserción de error según estándar
+    INSERT INTO dbo.DBErrors
         (
-              UserName
-            , Number
-            , State
-            , Severity
-            , [Line]
-            , [Procedure]
-            , Message
-            , DateTime
+        UserName
+        , Number
+        , State
+        , Severity
+        , [Line]
+        , [Procedure]
+        , Message
+        , DateTime
         )
-        VALUES
+    VALUES
         (
-              SUSER_SNAME()
-            , ERROR_NUMBER()
-            , ERROR_STATE()
-            , ERROR_SEVERITY()
-            , ERROR_LINE()
-            , ERROR_PROCEDURE()
-            , ERROR_MESSAGE()
-            , SYSDATETIME()
-        );
+            SUSER_SNAME()
+        , ERROR_NUMBER()
+        , ERROR_STATE()
+        , ERROR_SEVERITY()
+        , ERROR_LINE()
+        , ERROR_PROCEDURE()
+        , ERROR_MESSAGE()
+        , SYSDATETIME()
+    );
 
-        SET @outResultCode = 61003;
-    END CATCH;
+    SET @outResultCode = 61003;
+    THROW;
+END CATCH
 END;
 GO
