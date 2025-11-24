@@ -1,4 +1,4 @@
-CREATE OR ALTER PROCEDURE dbo.usp_RegistrarPagoIndividual
+﻿CREATE OR ALTER PROCEDURE dbo.usp_RegistrarPagoIndividual
 (
       @inIdFactura          INT
     , @inTipoMedioPagoId    INT
@@ -11,7 +11,7 @@ BEGIN
     SET @outResultCode = 0;
 
     BEGIN TRY
-        
+
         BEGIN TRAN;
 
         DECLARE @numeroFinca NVARCHAR(128);
@@ -23,10 +23,10 @@ BEGIN
 
         IF @numeroFinca IS NULL
         BEGIN
-            SET @outResultCode = 50005; -- no deber�a ocurrir
+            SET @outResultCode = 50005;
             ROLLBACK TRAN;
             RETURN;
-        END
+        END;
 
         INSERT INTO dbo.Pago
         (
@@ -47,38 +47,32 @@ BEGIN
             , SYSDATETIME()
         );
 
+        --------------------------------------------------------
+        -- 👉 FALTA ESTO: MARCAR LA FACTURA COMO PAGADA
+        --------------------------------------------------------
+        UPDATE dbo.Factura
+        SET estado = 2       -- pagada
+        WHERE id = @inIdFactura;
+
         COMMIT TRAN;
     END TRY
 
     BEGIN CATCH
-        
         IF @@TRANCOUNT > 0 
             ROLLBACK TRAN;
 
         INSERT INTO dbo.DBErrors
         (
-              UserName
-            , Number
-            , State
-            , Severity
-            , [Line]
-            , [Procedure]
-            , Message
-            , DateTime
+            UserName, Number, State, Severity, [Line], [Procedure], Message, DateTime
         )
         VALUES
         (
-              SUSER_SNAME()
-            , ERROR_NUMBER()
-            , ERROR_STATE()
-            , ERROR_SEVERITY()
-            , ERROR_LINE()
-            , ERROR_PROCEDURE()
-            , ERROR_MESSAGE()
-            , SYSDATETIME()
+            SUSER_SNAME(), ERROR_NUMBER(), ERROR_STATE(), ERROR_SEVERITY(),
+            ERROR_LINE(), ERROR_PROCEDURE(), ERROR_MESSAGE(), SYSDATETIME()
         );
 
         SET @outResultCode = 50004;
     END CATCH;
 END;
 GO
+
