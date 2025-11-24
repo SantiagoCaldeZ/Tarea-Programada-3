@@ -141,43 +141,34 @@ app.get("/api/propiedades-por-persona/:valorDocumento", async (req, res) => {
 // PAGO INDIVIDUAL -> usa usp_RegistrarPagoIndividual
 // ============================================================================
 app.post("/api/pagar-factura", async (req, res) => {
+    console.log("📌 Datos recibidos en /api/pagar-factura:", req.body);
+
+    const { idFactura, tipoMedioPagoId, numeroReferencia } = req.body;
+
     try {
-        const { idFactura, tipoMedioPagoId, numeroReferencia } = req.body;
-
-        if (!idFactura || !tipoMedioPagoId || !numeroReferencia) {
-            return res.status(400).json({
-                success: false,
-                message: "Faltan datos para procesar el pago."
-            });
-        }
-
         const pool = await sql.connect(dbconfig);
 
         const result = await pool.request()
             .input("inIdFactura", sql.Int, idFactura)
             .input("inTipoMedioPagoId", sql.Int, tipoMedioPagoId)
-            .input("inNumeroReferencia", sql.NVarChar(100), numeroReferencia)
+            .input("inNumeroReferencia", sql.VarChar(100), numeroReferencia)
             .output("outResultCode", sql.Int)
-            .execute("usp_RegistrarPagoIndividual");
+            .execute("usp_RegistrarPagoIndividual");  // ← CORREGIDO
 
-        if (result.output.outResultCode !== 0) {
-            return res.json({
-                success: false,
-                message: "No fue posible registrar el pago."
-            });
+        console.log("📌 Resultado SP RegistrarPagoIndividual:", result);
+
+        const code = result.output.outResultCode;
+
+        if (code !== 0) {
+            console.error("❌ SP devolvió error:", code);
+            return res.json({ success: false, message: "Error SP: " + code });
         }
 
-        return res.json({
-            success: true,
-            message: "Pago registrado correctamente. Ejecute luego los procesos masivos."
-        });
+        return res.json({ success: true, message: "Pago registrado correctamente." });
 
     } catch (err) {
-        console.error("Error en /api/pagar-factura:", err);
-        return res.status(500).json({
-            success: false,
-            message: "Error en el servidor."
-        });
+        console.error("🔥 ERROR en /api/pagar-factura:", err);
+        return res.status(500).json({ success: false, message: err.message });
     }
 });
 

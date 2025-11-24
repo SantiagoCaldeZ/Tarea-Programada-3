@@ -15,9 +15,6 @@ document.addEventListener("DOMContentLoaded", () => {
     let ultimaPropiedadCargada = null;
     let ultimasFacturas = [];
 
-    // -------------------------
-    // Helper: pintar propiedad
-    // -------------------------
     function renderPropiedad(propiedad) {
         seccionPropiedad.classList.remove("oculto");
         cardPropiedad.innerHTML = `
@@ -26,13 +23,10 @@ document.addEventListener("DOMContentLoaded", () => {
             <p><strong>Uso:</strong> ${propiedad.tipoUso || "N/D"}</p>
             <p><strong>Zona:</strong> ${propiedad.tipoZona || "N/D"}</p>
             <p><strong>Valor fiscal:</strong> ₡${propiedad.valorFiscal}</p>
-            <p><strong>Fecha registro:</strong> ${propiedad.fechaRegistro?.substring(0, 10) || "N/D"}</p>
+            <p><strong>Fecha registro:</strong> ${propiedad.fechaRegistro?.substring(0,10) || "N/D"}</p>
         `;
     }
 
-    // -------------------------
-    // Helper: pintar facturas
-    // -------------------------
     function renderFacturas(facturas) {
         ultimasFacturas = facturas;
 
@@ -52,14 +46,12 @@ document.addEventListener("DOMContentLoaded", () => {
             const esMasVieja = index === 0;
             filas += `
                 <tr class="${esMasVieja ? "factura-mas-vieja" : ""}">
-                    <td>${f.id}</td>
-                    <td>${f.fecha?.substring(0,10) || ""}</td>
-                    <td>${f.fechaVenc?.substring(0,10) || ""}</td>
+                    <td>${f.idFactura}</td>
+                    <td>${f.fecha?.substring(0,10)}</td>
+                    <td>${f.fechaVenc?.substring(0,10)}</td>
                     <td>₡${f.totalOriginal}</td>
                     <td>₡${f.totalFinal}</td>
-                    <td>
-                        <span class="badge badge-pendiente">Pendiente</span>
-                    </td>
+                    <td><span class="badge badge-pendiente">Pendiente</span></td>
                 </tr>
             `;
         });
@@ -78,9 +70,7 @@ document.addEventListener("DOMContentLoaded", () => {
                         <th>Estado</th>
                     </tr>
                 </thead>
-                <tbody>
-                    ${filas}
-                </tbody>
+                <tbody>${filas}</tbody>
             </table>
 
             <div style="margin-top:0.75rem;">
@@ -90,13 +80,11 @@ document.addEventListener("DOMContentLoaded", () => {
             </div>
         `;
 
-        const btnPagarMasVieja = document.getElementById("btnPagarMasVieja");
-        btnPagarMasVieja.addEventListener("click", onPagarMasVieja);
+        document
+            .getElementById("btnPagarMasVieja")
+            .addEventListener("click", onPagarMasVieja);
     }
 
-    // -------------------------
-    // Acción: pagar factura más vieja
-    // -------------------------
     async function onPagarMasVieja() {
         if (!ultimasFacturas || ultimasFacturas.length === 0) {
             Swal.fire("Sin facturas", "No hay facturas pendientes.", "info");
@@ -106,7 +94,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const factura = ultimasFacturas[0];
 
         const { value: formValues } = await Swal.fire({
-            title: `Pagar factura #${factura.id}`,
+            title: `Pagar factura #${factura.idFactura}`,
             html: `
                 <p>Total a pagar (actual): <strong>₡${factura.totalFinal}</strong></p>
                 <label for="swalMedio">Medio de pago</label>
@@ -118,7 +106,6 @@ document.addEventListener("DOMContentLoaded", () => {
                 <label for="swalRef">Número de referencia</label>
                 <input id="swalRef" class="swal2-input" placeholder="Ref. bancaria / comprobante">
             `,
-            focusConfirm: false,
             preConfirm: () => {
                 const medio = document.getElementById("swalMedio").value;
                 const ref = document.getElementById("swalRef").value.trim();
@@ -140,13 +127,15 @@ document.addEventListener("DOMContentLoaded", () => {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
-                    idFactura: factura.id,
+                    idFactura: factura.idFactura,
                     tipoMedioPagoId: parseInt(formValues.medio),
                     numeroReferencia: formValues.ref
                 })
             });
 
             const data = await resp.json();
+
+            console.log("📌 Respuesta del servidor:", data); // <--- AÑADIR
 
             if (!data.success) {
                 Swal.fire("Error", data.message || "No fue posible procesar el pago.", "error");
@@ -155,7 +144,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
             Swal.fire("Pago registrado", data.message || "Pago procesado correctamente.", "success");
 
-            // Recargar datos de la propiedad actual
             if (ultimaPropiedadCargada) {
                 buscarPorFinca(ultimaPropiedadCargada.numeroFinca);
             }
@@ -166,9 +154,6 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }
 
-    // -------------------------
-    // Búsqueda por finca
-    // -------------------------
     async function buscarPorFinca(finca) {
         if (!finca) {
             Swal.fire("Dato requerido", "Debe ingresar un número de finca.", "warning");
@@ -196,9 +181,6 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }
 
-    // -------------------------
-    // Búsqueda por documento
-    // -------------------------
     async function buscarPorDocumento(doc) {
         if (!doc) {
             Swal.fire("Dato requerido", "Debe ingresar una identificación.", "warning");
@@ -231,7 +213,6 @@ document.addEventListener("DOMContentLoaded", () => {
             html += "</ul>";
             divListaPropiedades.innerHTML = html;
 
-            // Asignar eventos a los botones
             divListaPropiedades.querySelectorAll("button[data-finca]").forEach(btn => {
                 btn.addEventListener("click", () => {
                     const finca = btn.getAttribute("data-finca");
@@ -246,7 +227,6 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }
 
-    // Eventos botones
     btnBuscarFinca.addEventListener("click", () => {
         const finca = txtFinca.value.trim();
         buscarPorFinca(finca);
