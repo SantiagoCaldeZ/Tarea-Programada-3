@@ -1,14 +1,70 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="es">
 <head>
     <meta charset="UTF-8">
+    <title>Portal Administración - Login</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Document</title>
     <link rel="stylesheet" href="style.css">
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 </head>
 <body>
-    
+    <div class="container">
+        <h1>Portal de Administración</h1>
+        <h2>Inicio de sesión</h2>
+
+        <form id="formLogin" class="card">
+            <label for="valorDocumento">Documento del administrador</label>
+            <input type="text" id="valorDocumento" name="valorDocumento" placeholder="Ej: 1-1111-1111">
+
+            <button type="submit" class="btn btn-primary">Ingresar</button>
+        </form>
+    </div>
+
+    <script>
+        const formLogin = document.getElementById("formLogin");
+
+        formLogin.addEventListener("submit", async (e) => {
+            e.preventDefault();
+
+            const valorDocumento = document.getElementById("valorDocumento").value.trim();
+
+            if (!valorDocumento) {
+                Swal.fire("Dato requerido", "Debe ingresar el documento del administrador.", "warning");
+                return;
+            }
+
+            try {
+                const resp = await fetch("/login-admin", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ valorDocumento })
+                });
+
+                const data = await resp.json();
+
+                if (!data.success) {
+                    Swal.fire("Error", data.message || "No se pudo iniciar sesión.", "error");
+                    return;
+                }
+
+                // Guardamos algo en localStorage si luego quieres validar sesión
+                localStorage.setItem("adminDocumento", valorDocumento);
+
+                Swal.fire({
+                    icon: "success",
+                    title: "Bienvenido",
+                    text: "Inicio de sesión correcto.",
+                    timer: 1200,
+                    showConfirmButton: false
+                }).then(() => {
+                    window.location.href = "portal.html";
+                });
+
+            } catch (err) {
+                console.error(err);
+                Swal.fire("Error", "Error de comunicación con el servidor.", "error");
+            }
+        });
+    </script>
 </body>
 </html>

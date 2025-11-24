@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Portal Administración - Propiedades</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+</head>
+<body>
+    <div class="container main-layout">
+        <header>
+            <h1>Portal de Administración</h1>
+            <p>Consulta de propiedades y pago de facturas pendientes.</p>
+        </header>
+
+        <section id="busqueda">
+            <div class="card">
+                <h2>Búsqueda de propiedad</h2>
+                <div class="grid-2">
+                    <div>
+                        <h3>Por número de finca</h3>
+                        <label for="txtFinca">Número de finca</label>
+                        <input type="text" id="txtFinca" placeholder="Ej: F-0001">
+                        <button id="btnBuscarFinca" class="btn btn-primary" style="margin-top:0.5rem;">
+                            Buscar por finca
+                        </button>
+                    </div>
+                    <div>
+                        <h3>Por identificación de propietario</h3>
+                        <label for="txtIdentificacion">Documento</label>
+                        <input type="text" id="txtIdentificacion" placeholder="Ej: 1-1111-1111">
+                        <button id="btnBuscarID" class="btn btn-secondary" style="margin-top:0.5rem;">
+                            Buscar por propietario
+                        </button>
+                        <div id="listaPropiedades" style="margin-top:0.75rem;"></div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section id="resultado-propiedad" class="oculto">
+            <div class="card" id="cardPropiedad">
+                <!-- aquí se pintan los datos de la propiedad -->
+            </div>
+        </section>
+
+        <section id="facturas-pendientes" class="oculto">
+            <div class="table-container" id="cardFacturas">
+                <!-- aquí se pinta la tabla de facturas -->
+            </div>
+        </section>
+    </div>
+
+    <script src="portal.js"></script>
+</body>
+</html>
