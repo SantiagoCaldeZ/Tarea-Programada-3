@@ -3,21 +3,35 @@ CREATE OR ALTER PROCEDURE dbo.usp_RegistrarPagoIndividual
       @inIdFactura          INT
     , @inTipoMedioPagoId    INT
     , @inNumeroReferencia   NVARCHAR(100)
-    , @outResultCode        INT             OUTPUT
+    , @outResultCode        INT OUTPUT
 )
 AS
 BEGIN
     SET NOCOUNT ON;
-
     SET @outResultCode = 0;
 
     BEGIN TRY
-
+        
         BEGIN TRAN;
+
+        DECLARE @numeroFinca NVARCHAR(128);
+
+        SELECT @numeroFinca = p.numeroFinca
+        FROM dbo.Factura f
+        JOIN dbo.Propiedad p ON p.id = f.idPropiedad
+        WHERE f.id = @inIdFactura;
+
+        IF @numeroFinca IS NULL
+        BEGIN
+            SET @outResultCode = 50005; -- no debería ocurrir
+            ROLLBACK TRAN;
+            RETURN;
+        END
 
         INSERT INTO dbo.Pago
         (
-              idFactura
+              numeroFinca
+            , idFactura
             , monto
             , idTipoMedioPago
             , numeroReferencia
@@ -25,17 +39,21 @@ BEGIN
         )
         VALUES
         (
-              @inIdFactura             -- idFactura
-            , NULL                    -- monto: la capa lógica NO lo manda; se aplica masivamente
-            , @inTipoMedioPagoId      -- idTipoMedioPago
-            , @inNumeroReferencia     -- numeroReferencia
-            , SYSDATETIME()           -- fecha
+              @numeroFinca
+            , @inIdFactura
+            , NULL
+            , @inTipoMedioPagoId
+            , @inNumeroReferencia
+            , SYSDATETIME()
         );
 
         COMMIT TRAN;
-
     END TRY
+
     BEGIN CATCH
+        
+        IF @@TRANCOUNT > 0 
+            ROLLBACK TRAN;
 
         INSERT INTO dbo.DBErrors
         (
