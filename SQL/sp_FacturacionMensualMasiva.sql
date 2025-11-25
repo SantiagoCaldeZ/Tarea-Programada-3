@@ -1,9 +1,4 @@
-/****** Object:  StoredProcedure [dbo].[usp_FacturacionMensualMasiva]    Script Date: 24/11/2025 7:53:21 p.Â m. ******/
-SET ANSI_NULLS ON
-GO
-SET QUOTED_IDENTIFIER ON
-GO
-ALTER   PROCEDURE [dbo].[usp_FacturacionMensualMasiva]
+CREATE OR ALTER   PROCEDURE [dbo].[usp_FacturacionMensualMasiva]
     (
     @inFechaCorte   DATE,
     @outResultCode  INT OUTPUT
@@ -44,7 +39,7 @@ BEGIN
         ,
         fechaVenc DATE
         ,
-        idFactura INT      -- Se actualizarÃ¡ con el ID generado
+        idFactura INT      -- Se actualizará con el ID generado
     );
 
     -- Tabla de ayuda para el OUTPUT de IDs
@@ -55,7 +50,7 @@ BEGIN
         idPropiedad INT
     );
 
-    -- Obtener dÃ­as de vencimiento
+    -- Obtener días de vencimiento
     SELECT @diasVenc = TRY_CONVERT(INT, valor)
     FROM dbo.ParametroSistema
     WHERE clave = N'DiasVencimientoFactura';
@@ -76,7 +71,7 @@ BEGIN
         Lecturas
         AS
         (
-            -- Se obtiene la Ãºltima lectura y la penÃºltima para calcular la diferencia
+            -- Se obtiene la última lectura y la penúltima para calcular la diferencia
             SELECT
                 m.idPropiedad,
                 m.numeroMedidor,
@@ -124,7 +119,7 @@ BEGIN
         , @fechaEmision
         , @fechaVenc
     FROM dbo.Propiedad AS pr
-    -- Solo propiedades que tienen ConsumoAgua activo O algÃºn otro CC mensual
+    -- Solo propiedades que tienen ConsumoAgua activo O algún otro CC mensual
     WHERE EXISTS
     (
         SELECT 1
@@ -142,8 +137,8 @@ BEGIN
         idPropiedad
         ,fecha
         ,fechaVenc
-        ,totalOriginal -- Se actualizarÃ¡ mÃ¡s adelante
-        ,totalFinal -- Se actualizarÃ¡ mÃ¡s adelante
+        ,totalOriginal -- Se actualizará más adelante
+        ,totalFinal -- Se actualizará más adelante
         ,estado -- 1 = Pendiente
         )
     OUTPUT 
@@ -168,7 +163,7 @@ BEGIN
         JOIN @FacturasNewIDs AS nid
         ON nid.idPropiedad = fb.idPropiedad;
 
-    -- 4 INSERCIÃ“N DE DETALLES DE FACTURA   
+    -- 4 INSERCIÓN DE DETALLES DE FACTURA   
     -- 4.1 CONSUMO DE AGUA 
     INSERT INTO dbo.DetalleFactura
         ( idFactura, idCC, descripcion, monto, m3Facturados )
@@ -210,7 +205,7 @@ BEGIN
         JOIN dbo.CC AS cc ON cc.id = cp.idCC AND cc.nombre = N'PatenteComercial'
         JOIN dbo.CC_PatenteComercial AS pc ON pc.id = cc.id; 
 
-    -- 4.4 RECOLECCIÃ“N BASURA (CC ID 4 - Mensual / Valor Fijo + Tramos M2)
+    -- 4.4 RECOLECCIÓN BASURA (CC ID 4 - Mensual / Valor Fijo + Tramos M2)
     INSERT INTO dbo.DetalleFactura
         ( idFactura, idCC, descripcion, monto )
     SELECT
@@ -261,7 +256,7 @@ BEGIN
             -- Solo las que acabamos de crear
             GROUP BY idFactura
         )
-    -- 5.2 Actualizar las facturas reciÃ©n creadas
+    -- 5.2 Actualizar las facturas recién creadas
     UPDATE f
     SET f.totalOriginal = t.total,
         f.totalFinal = t.total      -- Inicialmente, final es igual al original

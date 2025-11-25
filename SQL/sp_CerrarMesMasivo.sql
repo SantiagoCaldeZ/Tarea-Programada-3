@@ -1,11 +1,7 @@
-SET ANSI_NULLS ON
-GO
-SET QUOTED_IDENTIFIER ON
-GO
 ALTER   PROCEDURE [dbo].[usp_CerrarMesMasivo]
     (
     @inFechaCorte   DATE,
-    -- Ãšltimo dÃ­a del mes que termina
+    -- Último día del mes que termina
     @outResultCode  INT OUTPUT
 )
 AS
@@ -24,17 +20,17 @@ BEGIN
 
     BEGIN TRY
     
-    -- 1 ValidaciÃ³n 
+    -- 1 Validación 
     IF @inFechaCorte IS NULL
     BEGIN
         SET @outResultCode = 66001;
         RETURN;
     END;
 
-    -- Calcular la fecha de la lectura base (primer dÃ­a del mes siguiente o mes actual segÃºn lÃ³gica)
+    -- Calcular la fecha de la lectura base (primer día del mes siguiente o mes actual según lógica)
     SET @fechaInicioMes = DATEADD(DAY, 1, @inFechaCorte);
 
-    -- 2 Obtener lecturas mÃ¡s recientes a la fecha de corte 
+    -- 2 Obtener lecturas más recientes a la fecha de corte 
     ;WITH
         UltLect
         AS

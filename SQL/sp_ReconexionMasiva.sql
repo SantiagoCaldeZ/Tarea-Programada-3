@@ -1,9 +1,4 @@
-﻿/****** Object:  StoredProcedure [dbo].[usp_ReconexionMasiva]    Script Date: 24/11/2025 10:15:37 p. m. ******/
-SET ANSI_NULLS ON
-GO
-SET QUOTED_IDENTIFIER ON
-GO
-ALTER   PROCEDURE [dbo].[usp_ReconexionMasiva]
+﻿CREATE OR ALTER   PROCEDURE [dbo].[usp_ReconexionMasiva]
     (
     @inFechaCorte   DATE
     ,

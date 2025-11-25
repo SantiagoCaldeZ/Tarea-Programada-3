@@ -47,11 +47,18 @@ document.addEventListener("DOMContentLoaded", () => {
             filas += `
                 <tr class="${esMasVieja ? "factura-mas-vieja" : ""}">
                     <td>${f.idFactura}</td>
-                    <td>${f.fecha?.substring(0,10)}</td>
-                    <td>${f.fechaVenc?.substring(0,10)}</td>
+                    <td>${f.fecha?.substring(0,10) || ""}</td>
+                    <td>${f.fechaVenc?.substring(0,10) || ""}</td>
                     <td>₡${f.totalOriginal}</td>
                     <td>₡${f.totalFinal}</td>
-                    <td><span class="badge badge-pendiente">Pendiente</span></td>
+                    <td>
+                        <span class="badge ${
+                            f.estadoCalculado === "Vencida" ? "badge-vencida"
+                            : f.estadoCalculado === "Pendiente" ? "badge-pendiente"
+                            : f.estadoCalculado === "Parcial" ? "badge-parcial"
+                            : "badge-pagada"
+                        }">${f.estadoCalculado}</span>
+                    </td>
                 </tr>
             `;
         });

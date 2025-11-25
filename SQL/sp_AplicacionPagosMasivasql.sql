@@ -1,8 +1,4 @@
-﻿SET ANSI_NULLS ON
-GO
-SET QUOTED_IDENTIFIER ON
-GO
-ALTER   PROCEDURE [dbo].[usp_AplicacionPagosMasiva]
+﻿CREATE OR ALTER   PROCEDURE [dbo].[usp_AplicacionPagosMasiva]
     (
     @inFechaCorte DATE,
     @outResultCode INT OUTPUT

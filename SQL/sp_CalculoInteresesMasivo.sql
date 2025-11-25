@@ -1,8 +1,4 @@
-SET ANSI_NULLS ON
-GO
-SET QUOTED_IDENTIFIER ON
-GO
-ALTER   PROCEDURE [dbo].[usp_CalculoInteresesMasivo]
+CREATE OR ALTER   PROCEDURE [dbo].[usp_CalculoInteresesMasivo]
     (
     @inFechaCorte   DATE,
     @outResultCode  INT OUTPUT
@@ -17,7 +13,7 @@ BEGIN
     IF @inFechaCorte IS NULL
     BEGIN
         SET @outResultCode = 61001;
-        -- fecha de corte invÃ¡lida
+        -- fecha de corte inválida
         RETURN;
     END;
 
@@ -39,7 +35,7 @@ BEGIN
     );
 
     BEGIN TRY
-    -- 1 Obtener parÃ¡metros para cÃ¡lculo (CC y Tasa)
+    -- 1 Obtener parámetros para cálculo (CC y Tasa)
 
     SELECT @idCC = c.id
     FROM dbo.CC AS c
@@ -57,7 +53,7 @@ BEGIN
     FROM dbo.ParametroSistema AS p
     WHERE (p.clave = N'TasaInteresMoratorio');
 
-    -- Se asume un mes de 30 dÃ­as para el cÃ¡lculo de la tasa diaria
+    -- Se asume un mes de 30 días para el cálculo de la tasa diaria
     SET @tasaDiaria = @tasaMensual / 30.0; 
 
     -- 2 Identificar y calcular intereses de facturas en mora 
@@ -74,7 +70,7 @@ BEGIN
         f.idPropiedad,
         f.totalOriginal,
         DATEDIFF(DAY, f.fechaVenc, @inFechaCorte),
-        -- CÃ¡lculo: monto_base * tasa_diaria * dÃ­as_mora
+        -- Cálculo: monto_base * tasa_diaria * días_mora
         (f.totalOriginal * @tasaDiaria * DATEDIFF(DAY, f.fechaVenc, @inFechaCorte))
     FROM dbo.Factura AS f
     WHERE 
@@ -84,7 +80,7 @@ BEGIN
 
     BEGIN TRAN;
 
-    -- Subconsulta para Intereses Acumulados (si ya se habÃ­a aplicado el CC)
+    -- Subconsulta para Intereses Acumulados (si ya se había aplicado el CC)
     ;WITH
         InteresAcumulado
         AS
@@ -111,7 +107,7 @@ BEGIN
     FROM @FacturasMora AS fm
         LEFT JOIN InteresAcumulado AS ia --en este caso el left join hace que las facturas nuevas en mora sean incluidas pero su interes acumulado sera nulo
         ON ia.idFactura = fm.idFactura
-    -- Solo insertar si el nuevo interÃ©s calculado supera el acumulado (o si no existe)
+    -- Solo insertar si el nuevo interés calculado supera el acumulado (o si no existe)
     WHERE (fm.interesTeorico > ISNULL(ia.interesAcumulado, 0.0));
 
     --Recalcular totalFinal de facturas afectadas 
@@ -140,7 +136,7 @@ BEGIN CATCH
     IF (XACT_STATE() <> 0)
         ROLLBACK TRAN;
 
-    -- InserciÃ³n de error segÃºn estÃ¡ndar
+    -- Inserción de error según estándar
     INSERT INTO dbo.DBErrors
         (
         UserName

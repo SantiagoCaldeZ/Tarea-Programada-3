@@ -66,26 +66,24 @@ app.post("/login-admin", async (req, res) => {
 // ============================================================================
 // BUSCAR PROPIEDAD POR FINCA -> usa usp_PropiedadPorFinca
 // ============================================================================
-app.get("/api/propiedad-por-finca/:numeroFinca", async (req, res) => {
+app.get("/api/propiedad-por-finca/:finca", async (req, res) => {
+    const finca = req.params.finca;
+
     try {
-        const { numeroFinca } = req.params;
-
         const pool = await sql.connect(dbconfig);
-
         const result = await pool.request()
-            .input("inNumeroFinca", sql.NVarChar(64), numeroFinca)
+            .input("inNumeroFinca", sql.NVarChar(64), finca)
             .output("outResultCode", sql.Int)
             .execute("usp_PropiedadPorFinca");
 
-        if (result.output.outResultCode !== 0 || result.recordsets[0].length === 0) {
-            return res.json({
-                success: false,
-                message: "No se encontró una propiedad con ese número de finca."
-            });
+        const code = result.output.outResultCode;
+
+        if (code !== 0) {
+            return res.json({ success: false, message: "Error SP: " + code });
         }
 
-        const propiedad = result.recordsets[0][0];
-        const facturas = result.recordsets[1];
+        const propiedad = result.recordsets[0][0] || null;
+        const facturas = result.recordsets[1] || [];
 
         return res.json({
             success: true,
@@ -94,11 +92,8 @@ app.get("/api/propiedad-por-finca/:numeroFinca", async (req, res) => {
         });
 
     } catch (err) {
-        console.error("Error en /api/propiedad-por-finca:", err);
-        return res.status(500).json({
-            success: false,
-            message: "Error en el servidor."
-        });
+        console.error("🔥 Error en /api/propiedad-por-finca:", err);
+        return res.status(500).json({ success: false, message: err.message });
     }
 });
 
