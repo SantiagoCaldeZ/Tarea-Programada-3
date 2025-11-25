@@ -1,170 +1,179 @@
-﻿CREATE OR ALTER PROCEDURE dbo.usp_ReconexionMasiva
-(
-      @inFechaCorte   DATE
-    , @outResultCode  INT OUTPUT
+﻿/****** Object:  StoredProcedure [dbo].[usp_ReconexionMasiva]    Script Date: 24/11/2025 10:15:37 p. m. ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER   PROCEDURE [dbo].[usp_ReconexionMasiva]
+    (
+    @inFechaCorte   DATE
+    ,
+    @outResultCode  INT OUTPUT
 )
 AS
 BEGIN
     SET NOCOUNT ON;
     SET @outResultCode = 0;
 
-BEGIN TRY
-    BEGIN TRAN;
+    DECLARE @idCC_Reconexion INT;
+    DECLARE @montoFijo MONEY;
 
-    ----------------------------------------------------------------------
-    -- 0) Validación
-    ----------------------------------------------------------------------
+    -- Tabla Variable (Reemplaza a la tabla temporal #ReconexionPend)
+    DECLARE @ReconexionPend TABLE
+    (
+        idOrdenCorta INT PRIMARY KEY
+        ,
+        idPropiedad INT
+        ,
+        idFacturaCausa INT
+    );
+
+    BEGIN TRY
     IF (@inFechaCorte IS NULL)
     BEGIN
-        SET @outResultCode = 63001;   -- Fecha inválida
-        ROLLBACK TRAN;
+        SET @outResultCode = 63001;
+        -- Fecha inválida
         RETURN;
     END;
 
-    ----------------------------------------------------------------------
-    -- 1) Obtener idCC de ReconexionAgua
-    ----------------------------------------------------------------------
-    DECLARE @idCC_Reconexion INT;
-
-    SELECT
-        @idCC_Reconexion = cc.id
+    -- 1 Obtener idCC y Monto de ReconexionAgua 
+    SELECT @idCC_Reconexion = cc.id
     FROM dbo.CC AS cc
     WHERE (cc.nombre = N'ReconexionAgua');
 
     IF (@idCC_Reconexion IS NULL)
     BEGIN
-        SET @outResultCode = 63002;   -- Falta CC de reconexión
-        ROLLBACK TRAN;
+        SET @outResultCode = 63002;
+        -- Falta CC de reconexión
         RETURN;
     END;
-
-    ----------------------------------------------------------------------
-    -- 2) Propiedades con corte activo cuya factura causa YA está pagada
-    --    (estado = 2 = Pagado normal)
-    ----------------------------------------------------------------------
-    ;WITH CortesPendientes AS
-    (
-        SELECT
-              oc.id            AS idOrdenCorta
-            , oc.idPropiedad
-            , oc.idFacturaCausa
-        FROM dbo.OrdenCorta AS oc
-        WHERE (oc.estadoCorta = 1)     -- orden de corte activa
-    ),
-    FacturasPagadas AS
-    (
-        SELECT
-              f.id            AS idFactura
-            , f.idPropiedad
-        FROM dbo.Factura AS f
-        WHERE     (f.estado = 2)       -- 2 = Pagado normal
-              AND (f.fecha <= @inFechaCorte)
-    )
-    SELECT
-          cp.idOrdenCorta
-        , cp.idPropiedad
-        , fp.idFactura
-    INTO #ReconexionPend
-    FROM CortesPendientes AS cp
-    JOIN FacturasPagadas AS fp
-        ON fp.idFactura = cp.idFacturaCausa;
-
-    ----------------------------------------------------------------------
-    -- Si no hay nada que reconectar, salir
-    ----------------------------------------------------------------------
-    IF NOT EXISTS (SELECT 1 FROM #ReconexionPend)
-    BEGIN
-        SET @outResultCode = 63003;   -- No había propiedades para reconectar
-        ROLLBACK TRAN;
-        RETURN;
-    END;
-
-    ----------------------------------------------------------------------
-    -- 3) Insertar orden de reconexión
-    ----------------------------------------------------------------------
-    INSERT INTO dbo.OrdenReconexion
-    (
-          idPropiedad
-        , idOrdenCorta
-        , idFacturaPago
-        , estadoReconexion
-    )
-    SELECT
-          r.idPropiedad
-        , r.idOrdenCorta
-        , r.idFactura       -- factura que quedó pagada y dispara la reconexión
-        , 1                 -- 1 = ejecutado / generado
-    FROM #ReconexionPend AS r;
-
-    ----------------------------------------------------------------------
-    -- 4) Marcar OrdenCorta como atendida y levantar el corte en Propiedad
-    ----------------------------------------------------------------------
-    UPDATE oc
-    SET oc.estadoCorta = 2
-    FROM dbo.OrdenCorta AS oc
-    JOIN #ReconexionPend AS r
-        ON r.idOrdenCorta = oc.id;
-
-    UPDATE p
-    SET p.aguaCortada = 0
-    FROM dbo.Propiedad AS p
-    JOIN #ReconexionPend AS r
-        ON r.idPropiedad = p.id;
-
-    ----------------------------------------------------------------------
-    -- 5) Insertar detalle de reconexión en DetalleFactura
-    ----------------------------------------------------------------------
-    DECLARE @montoFijo MONEY;
-
-    SELECT
-        @montoFijo = ra.ValorFijo
+    
+    SELECT @montoFijo = ra.ValorFijo
     FROM dbo.CC_ReconexionAgua AS ra
     WHERE (ra.id = @idCC_Reconexion);
 
     IF (@montoFijo IS NULL)
     BEGIN
-        SET @outResultCode = 63002;   -- Configuración incompleta del CC
-        ROLLBACK TRAN;
+        SET @outResultCode = 63002;
+        -- Configuración incompleta del CC
         RETURN;
     END;
 
-    -- Insertar un renglón de reconexión por cada factura causa
+    -- 2 Identificar Propiedades a reconectar
+    ;WITH
+        CortesPendientes
+        AS
+        (
+            SELECT
+                oc.id            AS idOrdenCorta
+            , oc.idPropiedad
+            , oc.idFacturaCausa
+            FROM dbo.OrdenCorta AS oc
+            WHERE (oc.estadoCorta = 1)
+            -- orden de corte activa
+        ),
+        FacturasPagadas
+        AS
+        (
+            SELECT
+                f.id            AS idFactura
+            , f.idPropiedad
+            FROM dbo.Factura AS f
+            WHERE     (f.estado = 2) -- 2 = Pagado normal (totalFinal <= 0)
+                AND (f.fecha <= @inFechaCorte)
+        )
+    -- Llenado de la Tabla Variable 
+    INSERT INTO @ReconexionPend
+        (
+        idOrdenCorta
+        , idPropiedad
+        , idFacturaCausa
+        )
+    SELECT
+        cp.idOrdenCorta
+        , cp.idPropiedad
+        , fp.idFactura
+    FROM CortesPendientes AS cp
+        JOIN FacturasPagadas AS fp
+        ON fp.idFactura = cp.idFacturaCausa;
+
+    -- Si no hay nada que reconectar, salir 
+    IF NOT EXISTS (SELECT 1
+    FROM @ReconexionPend)
+    BEGIN
+        SET @outResultCode = 63003;
+        -- No había propiedades para reconectar
+        RETURN;
+    END;
+
+    BEGIN TRAN;
+
+    -- 3 Insertar orden de reconexión 
+    INSERT INTO dbo.OrdenReconexion
+        (
+        idPropiedad
+        , idOrdenCorta
+        , idFacturaPago
+        , estadoReconexion
+        )
+    SELECT
+        r.idPropiedad
+        , r.idOrdenCorta
+        , r.idFacturaCausa
+        , 1
+    -- 1 = Generado / Pendiente de ejecución física
+    FROM @ReconexionPend AS r;
+
+    -- 4 Marcar OrdenCorta como atendida y levantar el corte en Propiedad 
+    -- 4.1 Marcar OrdenCorta como Atendida 
+    UPDATE oc
+    SET oc.estadoCorta = 2
+    FROM dbo.OrdenCorta AS oc
+        JOIN @ReconexionPend AS r
+        ON r.idOrdenCorta = oc.id;
+
+    -- 4.2 Levantar el corte en la propiedad
+    UPDATE p
+    SET p.aguaCortada = 0
+    FROM dbo.Propiedad AS p
+        JOIN @ReconexionPend AS r
+        ON r.idPropiedad = p.id;
+
+    -- 5 Insertar detalle de reconexión en DetalleFactura 
+    -- El cargo de reconexión se agrega a la factura que fue pagada (la que disparó el proceso)
     INSERT INTO dbo.DetalleFactura
-    (
-          idFactura
+        (
+        idFactura
         , idCC
         , descripcion
         , monto
-    )
+        )
     SELECT
-          r.idFactura
+        r.idFacturaCausa
         , @idCC_Reconexion
         , N'Reconexión del servicio de agua'
         , @montoFijo
-    FROM #ReconexionPend AS r;
+    FROM @ReconexionPend AS r;
 
-    ----------------------------------------------------------------------
-    -- 6) Actualizar totalFinal de las facturas afectadas
-    --    (sumamos SOLO el monto de reconexión recién agregado)
-    ----------------------------------------------------------------------
-    ;WITH MontosReconexion AS
-    (
-        SELECT
-              df.idFactura
-            , SUM(df.monto) AS montoReconex
-        FROM dbo.DetalleFactura AS df
-        JOIN #ReconexionPend   AS r
-            ON r.idFactura = df.idFactura
-        WHERE (df.idCC = @idCC_Reconexion)
-        GROUP BY df.idFactura
-    )
+    -- 6 Actualizar totalFinal de las facturas afectadas
+    --    (Recalculando el totalFinal con el cargo de reconexión)
+    ;WITH
+        NuevoTotalFactura
+        AS
+        (
+            SELECT
+                df.idFactura
+            , SUM(df.monto) AS totalActual
+            FROM dbo.DetalleFactura AS df
+                JOIN @ReconexionPend AS r
+                ON r.idFacturaCausa = df.idFactura
+            GROUP BY df.idFactura
+        )
     UPDATE f
-    SET f.totalFinal = f.totalFinal + mr.montoReconex
+    SET f.totalFinal = nt.totalActual
     FROM dbo.Factura          AS f
-    JOIN MontosReconexion     AS mr
-        ON mr.idFactura = f.id;
+        JOIN NuevoTotalFactura    AS nt
+        ON nt.idFactura = f.id;
 
-    ----------------------------------------------------------------------
     COMMIT TRAN;
 
 END TRY
@@ -174,8 +183,8 @@ BEGIN CATCH
         ROLLBACK TRAN;
 
     INSERT INTO dbo.DBErrors
-    (
-          UserName
+        (
+        UserName
         , Number
         , State
         , Severity
@@ -183,10 +192,10 @@ BEGIN CATCH
         , [Procedure]
         , Message
         , DateTime
-    )
+        )
     VALUES
-    (
-          SUSER_SNAME()
+        (
+            SUSER_SNAME()
         , ERROR_NUMBER()
         , ERROR_STATE()
         , ERROR_SEVERITY()
@@ -197,7 +206,7 @@ BEGIN CATCH
     );
 
     SET @outResultCode = 63004;
+    THROW;
 END CATCH;
-
 END;
 GO
