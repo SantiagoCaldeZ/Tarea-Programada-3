@@ -451,7 +451,7 @@ GO
 DECLARE @rc INT;
 
 EXEC dbo.usp_Xml_CargarCatalogos
-    @inIdXml       = 1,   -- el IdXml del catalogosV2
+    @inIdXml       = 1,   -- el IdXml del catalogosV3
     @outResultCode = @rc OUTPUT;
 
 SELECT @rc AS ResultCode;

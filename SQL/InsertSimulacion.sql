@@ -1611,12 +1611,3 @@ VALUES
 </FechaOperacion>
 </Operaciones>'
 );
-
--- EJECUCIÓN DEL SP
-DECLARE @rc INT;
-
-EXEC dbo.usp_Xml_CargarSimulacion
-    @inIdXml       = 2,  
-    @outResultCode = @rc OUTPUT;
-
-SELECT @rc AS ResultCode;

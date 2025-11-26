@@ -79,7 +79,7 @@ BEGIN
             WHERE pr.numeroFinca = T.N.value('@numeroFinca', N'nvarchar(64)')
         );
 
-                ----------------------------------------------------------------------
+        ----------------------------------------------------------------------
         -- 3) Movimientos de PropiedadPersona (asociar / desasociar)
         ----------------------------------------------------------------------
 
@@ -96,9 +96,13 @@ BEGIN
         ),
         MovPP_Asociar AS
         (
-            SELECT *
+            SELECT
+                fechaOperacion,
+                valorDocumento,
+                numeroFinca,
+                tipoAsociacionId
             FROM MovPP
-            WHERE tipoAsociacionId = 1
+            WHERE (tipoAsociacionId = 1)
         ),
         BaseIdPP AS
         (
@@ -322,36 +326,58 @@ BEGIN
             M.numeroFinca,
             M.tipoMedioPagoId,
             M.numeroReferencia,
-            NULL,
+            NULL,              -- idFactura se llenará en otros SPs
             M.fechaOperacion,
-            NULL
+            NULL               -- monto calculado luego
         FROM MovPago AS M
         WHERE NOT EXISTS
         (
-            SELECT 1
+            SELECT
+                1
             FROM dbo.Pago AS p
             WHERE p.numeroReferencia = M.numeroReferencia
         );
 
         ----------------------------------------------------------------------
-        -- 7) Cambios de valor fiscal de propiedad (del XML)
+        -- 7) PROCESOS MASIVOS (Ejecutados al final del procesamiento del XML)
         ----------------------------------------------------------------------
-        ;WITH Cambios AS
-        (
-            SELECT
-                C.value('@numeroFinca','nvarchar(64)') AS numeroFinca,
-                C.value('@nuevoValor','money') AS nuevoValor
-            FROM @xml.nodes('/Operaciones/FechaOperacion/CambiosValorPropiedad/Cambio') AS T(C)
-        )
-        UPDATE p
-        SET p.valorFiscal = c.nuevoValor
-        FROM dbo.Propiedad p
-        JOIN Cambios c ON c.numeroFinca = p.numeroFinca;
+        DECLARE @fechaCorte DATE;
 
+        SELECT
+            @fechaCorte = MAX(F.N.value('@fecha', 'date'))
+        FROM @xml.nodes('/Operaciones/FechaOperacion') AS F(N);
+
+        -- 7) PROCESOS MASIVOS (Ejecutados al final del procesamiento del XML)
+
+        EXEC dbo.usp_CalculoInteresesMasivo
+            @inFechaCorte   = @fechaCorte,
+            @outResultCode  = @outResultCode OUTPUT;
+
+        EXEC dbo.usp_FacturacionMensualMasiva
+            @inFechaCorte   = @fechaCorte,
+            @outResultCode  = @outResultCode OUTPUT;
+
+        EXEC dbo.usp_CorteMasivoAgua
+            @inFechaCorte   = @fechaCorte,
+            @outResultCode  = @outResultCode OUTPUT;
+
+        EXEC dbo.usp_AplicacionPagosMasiva
+            @inFechaCorte   = @fechaCorte,
+            @outResultCode  = @outResultCode OUTPUT;
+
+        EXEC dbo.usp_ReconexionMasiva
+            @inFechaCorte   = @fechaCorte,
+            @outResultCode  = @outResultCode OUTPUT;
+
+        IF (@fechaCorte = EOMONTH(@fechaCorte))
+        BEGIN
+            EXEC dbo.usp_CerrarMesMasivo
+                @inFechaCorte   = @fechaCorte,
+                @outResultCode  = @outResultCode OUTPUT;
+        END;
 
         ----------------------------------------------------------------------
         COMMIT TRAN;
-
     END TRY
     BEGIN CATCH
         IF (XACT_STATE() <> 0)
