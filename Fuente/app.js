@@ -6,7 +6,7 @@ const dbconfig = {
     user: "bdsc",
     password: "Franco2025",
     server: "francobd12025.database.windows.net",
-    database: "bdtp3",
+    database: "bdt3",
     options: {
         encrypt: true,
         trustServerCertificate: false
