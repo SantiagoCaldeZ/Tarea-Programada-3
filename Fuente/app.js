@@ -3,9 +3,9 @@ const sql = require("mssql");
 const path = require("path");
 
 const dbconfig = {
-    user: "bdsc",
+    user: "admin1",
     password: "Franco2025",
-    server: "francobd12025.database.windows.net",
+    server: "bdt3.database.windows.net",
     database: "bdt3",
     options: {
         encrypt: true,
