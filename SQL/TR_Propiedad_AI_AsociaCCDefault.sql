@@ -1,4 +1,4 @@
-CREATE OR ALTER TRIGGER dbo.TR_Propiedad_AI_AsociaCCDefault
+CREATE OR ALTER TRIGGER TR_Propiedad_AI_AsociaCCDefault
 ON dbo.Propiedad
 AFTER INSERT
 AS
@@ -6,220 +6,149 @@ BEGIN
     SET NOCOUNT ON;
 
     BEGIN TRY
-        DECLARE @idCCImpuesto          INT;
-        DECLARE @idCCConsumoAgua       INT;
-        DECLARE @idCCRecoleccionBasura INT;
-        DECLARE @idCCMantenimientoParq INT;
-        DECLARE @hoy                   DATE;
 
-        SET @hoy = CONVERT(DATE, GETDATE());
+        ----------------------------------------------------------------------
+        -- 1. Cargar IDs de CC según catálogo real (por nombre exacto)
+        ----------------------------------------------------------------------
+        DECLARE
+              @idCCImpuesto           INT = (SELECT id FROM dbo.CC WHERE nombre = N'ImpuestoPropiedad')
+            , @idCCConsumoAgua        INT = (SELECT id FROM dbo.CC WHERE nombre = N'ConsumoAgua')
+            , @idCCRecoleccionBasura  INT = (SELECT id FROM dbo.CC WHERE nombre = N'RecoleccionBasura')
+            , @idCCMantenimientoParq  INT = (SELECT id FROM dbo.CC WHERE nombre = N'MantenimientoParques');
 
-        /*  Buscar los ids de los CC que vamos a usar  */
-        SELECT
-            @idCCImpuesto          = MAX(CASE WHEN c.nombre = N'ImpuestoPropiedad'    THEN c.id END),
-            @idCCConsumoAgua       = MAX(CASE WHEN c.nombre = N'ConsumoAgua'          THEN c.id END),
-            @idCCRecoleccionBasura = MAX(CASE WHEN c.nombre = N'RecoleccionBasura'   THEN c.id END),
-            @idCCMantenimientoParq = MAX(CASE WHEN c.nombre = N'MantenimientoParques' THEN c.id END)
-        FROM dbo.CC AS c;
+        ----------------------------------------------------------------------
+        -- 2. Asociar IMPUESTO a TODAS las propiedades insertadas
+        ----------------------------------------------------------------------
+        INSERT INTO dbo.CCPropiedad (NumeroFinca, idCC, PropiedadId, fechaInicio, fechaFin)
+        SELECT  i.numeroFinca,
+                @idCCImpuesto,
+                i.id,
+                i.fechaRegistro,       -- fecha de inscripción
+                NULL
+        FROM inserted AS i
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM dbo.CCPropiedad AS cp
+            WHERE cp.PropiedadId = i.id
+              AND cp.idCC = @idCCImpuesto
+              AND cp.fechaFin IS NULL
+        );
 
-        /* 1) Impuesto sobre propiedad: SIEMPRE  */
-        IF (@idCCImpuesto IS NOT NULL)
-        BEGIN
-            INSERT INTO dbo.CCPropiedad
-            (
-                NumeroFinca
-              , idCC
-              , PropiedadId
-              , fechaInicio
-              , fechaFin
-            )
-            SELECT
-                i.numeroFinca
-              , @idCCImpuesto
-              , i.id
-              , @hoy
-              , NULL
-            FROM inserted AS i
-            WHERE NOT EXISTS
-            (
-                SELECT
-                    1
+        -- Evento: asociación
+        INSERT INTO dbo.CCPropiedadEvento (idPropiedad, idCC, idTipoAsociacion, fecha)
+        SELECT  i.id,
+                @idCCImpuesto,
+                1,                     -- asociar
+                i.fechaRegistro
+        FROM inserted AS i;
+
+        ----------------------------------------------------------------------
+        -- 3. Asociar CONSUMO AGUA solo si aplica (Residencial, Industrial, Comercial)
+        ----------------------------------------------------------------------
+        INSERT INTO dbo.CCPropiedad (NumeroFinca, idCC, PropiedadId, fechaInicio, fechaFin)
+        SELECT  i.numeroFinca,
+                @idCCConsumoAgua,
+                i.id,
+                i.fechaRegistro,
+                NULL
+        FROM inserted AS i
+        WHERE i.idTipoUsoPropiedad IN (1,2,3)
+          AND NOT EXISTS (
+                SELECT 1
                 FROM dbo.CCPropiedad AS cp
                 WHERE cp.PropiedadId = i.id
-                  AND cp.idCC        = @idCCImpuesto
+                  AND cp.idCC = @idCCConsumoAgua
                   AND cp.fechaFin IS NULL
-            );
-        END;
+          );
 
-        /* 2) Consumo de agua:
-              uso residencial / industrial / comercial
-           (Habitación, Industrial, Comercial)
-        */
-        IF (@idCCConsumoAgua IS NOT NULL)
-        BEGIN
-            INSERT INTO dbo.CCPropiedad
-            (
-                NumeroFinca
-              , idCC
-              , PropiedadId
-              , fechaInicio
-              , fechaFin
-            )
-            SELECT
-                i.numeroFinca
-              , @idCCConsumoAgua
-              , i.id
-              , @hoy
-              , NULL
-            FROM inserted             AS i
-            JOIN dbo.TipoUsoPropiedad AS tup
-                ON tup.id = i.idTipoUsoPropiedad
-            WHERE tup.nombre IN (N'Habitación', N'Comercial', N'Industrial')
-              AND NOT EXISTS
-              (
-                  SELECT
-                      1
-                  FROM dbo.CCPropiedad AS cp
-                  WHERE cp.PropiedadId = i.id
-                    AND cp.idCC        = @idCCConsumoAgua
-                    AND cp.fechaFin IS NULL
-              );
-        END;
+        INSERT INTO dbo.CCPropiedadEvento (idPropiedad, idCC, idTipoAsociacion, fecha)
+        SELECT  i.id,
+                @idCCConsumoAgua,
+                1,
+                i.fechaRegistro
+        FROM inserted AS i
+        WHERE i.idTipoUsoPropiedad IN (1,2,3);
 
-        /* 3) Recolección de basura:
-              zona distinta de agrícola
-        */
-        IF (@idCCRecoleccionBasura IS NOT NULL)
-        BEGIN
-            INSERT INTO dbo.CCPropiedad
-            (
-                NumeroFinca
-              , idCC
-              , PropiedadId
-              , fechaInicio
-              , fechaFin
-            )
-            SELECT
-                i.numeroFinca
-              , @idCCRecoleccionBasura
-              , i.id
-              , @hoy
-              , NULL
-            FROM inserted               AS i
-            JOIN dbo.TipoZonaPropiedad AS tzp
-                ON tzp.id = i.idTipoZonaPropiedad
-            WHERE tzp.nombre <> N'Agrícola'
-              AND NOT EXISTS
-              (
-                  SELECT
-                      1
-                  FROM dbo.CCPropiedad AS cp
-                  WHERE cp.PropiedadId = i.id
-                    AND cp.idCC        = @idCCRecoleccionBasura
-                    AND cp.fechaFin IS NULL
-              );
-        END;
+        ----------------------------------------------------------------------
+        -- 4. Asociar RECOLECCIÓN BASURA a toda zona que no sea Agrícola (idZona != 3)
+        ----------------------------------------------------------------------
+        INSERT INTO dbo.CCPropiedad (NumeroFinca, idCC, PropiedadId, fechaInicio, fechaFin)
+        SELECT  i.numeroFinca,
+                @idCCRecoleccionBasura,
+                i.id,
+                i.fechaRegistro,
+                NULL
+        FROM inserted AS i
+        WHERE i.idTipoZonaPropiedad <> 3
+          AND NOT EXISTS (
+                SELECT 1
+                FROM dbo.CCPropiedad AS cp
+                WHERE cp.PropiedadId = i.id
+                  AND cp.idCC = @idCCRecoleccionBasura
+                  AND cp.fechaFin IS NULL
+          );
 
-        /* 4) Mantenimiento de parques:
-              zona residencial o comercial
-        */
-        IF (@idCCMantenimientoParq IS NOT NULL)
-        BEGIN
-            INSERT INTO dbo.CCPropiedad
-            (
-                NumeroFinca
-              , idCC
-              , PropiedadId
-              , fechaInicio
-              , fechaFin
-            )
-            SELECT
-                i.numeroFinca
-              , @idCCMantenimientoParq
-              , i.id
-              , @hoy
-              , NULL
-            FROM inserted               AS i
-            JOIN dbo.TipoZonaPropiedad AS tzp
-                ON tzp.id = i.idTipoZonaPropiedad
-            WHERE tzp.nombre IN (N'Residencial', N'Comercial')
-              AND NOT EXISTS
-              (
-                  SELECT
-                      1
-                  FROM dbo.CCPropiedad AS cp
-                  WHERE cp.PropiedadId = i.id
-                    AND cp.idCC        = @idCCMantenimientoParq
-                    AND cp.fechaFin IS NULL
-              );
-        END;
+        INSERT INTO dbo.CCPropiedadEvento (idPropiedad, idCC, idTipoAsociacion, fecha)
+        SELECT  i.id,
+                @idCCRecoleccionBasura,
+                1,
+                i.fechaRegistro
+        FROM inserted AS i
+        WHERE i.idTipoZonaPropiedad <> 3;
+
+        ----------------------------------------------------------------------
+        -- 5. Asociar MANTENIMIENTO PARQUES solo si zona RESIDENCIAL o COMERCIAL (idZona = 1 o 2)
+        ----------------------------------------------------------------------
+        INSERT INTO dbo.CCPropiedad (NumeroFinca, idCC, PropiedadId, fechaInicio, fechaFin)
+        SELECT  i.numeroFinca,
+                @idCCMantenimientoParq,
+                i.id,
+                i.fechaRegistro,
+                NULL
+        FROM inserted AS i
+        WHERE i.idTipoZonaPropiedad IN (1,2)
+          AND NOT EXISTS (
+                SELECT 1
+                FROM dbo.CCPropiedad AS cp
+                WHERE cp.PropiedadId = i.id
+                  AND cp.idCC = @idCCMantenimientoParq
+                  AND cp.fechaFin IS NULL
+          );
+
+        INSERT INTO dbo.CCPropiedadEvento (idPropiedad, idCC, idTipoAsociacion, fecha)
+        SELECT  i.id,
+                @idCCMantenimientoParq,
+                1,
+                i.fechaRegistro
+        FROM inserted AS i
+        WHERE i.idTipoZonaPropiedad IN (1,2);
+
     END TRY
     BEGIN CATCH
+
         INSERT INTO dbo.DBErrors
         (
-            UserName
-          , Number
-          , State
-          , Severity
-          , [Line]
-          , [Procedure]
-          , Message
-          , DateTime
+              UserName
+            , Number
+            , State
+            , Severity
+            , [Line]
+            , [Procedure]
+            , Message
+            , DateTime
         )
         VALUES
         (
-            SUSER_SNAME()
-          , ERROR_NUMBER()
-          , ERROR_STATE()
-          , ERROR_SEVERITY()
-          , ERROR_LINE()
-          , ERROR_PROCEDURE()
-          , ERROR_MESSAGE()
-          , SYSDATETIME()
+              SUSER_SNAME()
+            , ERROR_NUMBER()
+            , ERROR_STATE()
+            , ERROR_SEVERITY()
+            , ERROR_LINE()
+            , ERROR_PROCEDURE()
+            , ERROR_MESSAGE()
+            , SYSDATETIME()
         );
 
-        THROW;   -- re–lanza el error para que la inserción falle visiblemente
     END CATCH;
 END;
 GO
-
-INSERT INTO dbo.Propiedad
-(
-    numeroFinca
-  , metrosCuadrados
-  , idTipoUsoPropiedad      -- p.ej. 1 = Habitación
-  , idTipoZonaPropiedad     -- p.ej. 1 = Residencial
-  , valorFiscal
-  , fechaRegistro
-  , numeroMedidor
-  , saldoM3
-  , saldoM3UltimaFactura
-)
-VALUES
-(
-    N'F-TEST-001'
-  , 120
-  , 1
-  , 1
-  , 1000000
-  , CONVERT(DATE, GETDATE())
-  , N'MED-TEST-001'
-  , 0
-  , 0
-);
-
-SELECT
-    cp.id
-  , cp.PropiedadId
-  , cp.NumeroFinca
-  , cp.idCC
-  , c.nombre AS CCNombre
-  , cp.fechaInicio
-  , cp.fechaFin
-FROM dbo.CCPropiedad AS cp
-JOIN dbo.CC          AS c
-    ON c.id = cp.idCC
-WHERE cp.NumeroFinca = N'F-TEST-001'
-  AND cp.fechaFin IS NULL
-ORDER BY
-    cp.id;

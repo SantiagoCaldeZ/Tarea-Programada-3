@@ -1,289 +1,288 @@
-CREATE OR ALTER   PROCEDURE [dbo].[usp_FacturacionMensualMasiva]
-    (
-    @inFechaCorte   DATE,
-    @outResultCode  INT OUTPUT
+ï»¿CREATE OR ALTER PROCEDURE dbo.usp_FacturacionMensualMasiva
+(
+      @inFechaCorte   DATE,
+      @outResultCode  INT OUTPUT
 )
 AS
 BEGIN
     SET NOCOUNT ON;
     SET @outResultCode = 0;
 
-    IF @inFechaCorte IS NULL
-    BEGIN
-        SET @outResultCode = 60001;
-        RETURN;
-    END;
-
-    DECLARE @diasVenc       INT;
-    DECLARE @fechaEmision   DATE = @inFechaCorte;
-    DECLARE @fechaVenc      DATE;
-
-    -- Almacena el Consumo calculado por propiedad
-    DECLARE @Consumos TABLE
-    (
-        idPropiedad INT PRIMARY KEY
-        ,
-        consumoM3 DECIMAL(10, 2)
-        ,
-        lecturaAnt DECIMAL(10, 2)
-        ,
-        lecturaAct DECIMAL(10, 2)
-    );
-
-    -- Almacena las propiedades a facturar y el ID generado
-    DECLARE @FacturasBase TABLE
-    (
-        idPropiedad INT PRIMARY KEY
-        ,
-        fechaEmision DATE
-        ,
-        fechaVenc DATE
-        ,
-        idFactura INT      -- Se actualizará con el ID generado
-    );
-
-    -- Tabla de ayuda para el OUTPUT de IDs
-    DECLARE @FacturasNewIDs TABLE
-    (
-        idFactura INT
-        ,
-        idPropiedad INT
-    );
-
-    -- Obtener días de vencimiento
-    SELECT @diasVenc = TRY_CONVERT(INT, valor)
-    FROM dbo.ParametroSistema
-    WHERE clave = N'DiasVencimientoFactura';
-
-    IF @diasVenc IS NULL
-    BEGIN
-        SET @outResultCode = 60002;
-        RETURN;
-    END;
-
-    SET @fechaVenc = DATEADD(DAY, @diasVenc, @fechaEmision);
-
     BEGIN TRY
 
-    -- 1)Calcular consumos del mes segun MovMedidor
+        ----------------------------------------------------------------------
+        -- 0) Solo ejecutar en FIN DE MES
+        ----------------------------------------------------------------------
+        IF @inFechaCorte <> EOMONTH(@inFechaCorte)
+        BEGIN
+            RETURN;
+        END;
 
-    ;WITH
-        Lecturas
-        AS
+        DECLARE @PrimerDiaMes DATE = DATEFROMPARTS(YEAR(@inFechaCorte), MONTH(@inFechaCorte), 1);
+
+        ----------------------------------------------------------------------
+        -- 1) Propiedades con algÃºn CC activo Y que no hayan sido facturadas este mes
+        ----------------------------------------------------------------------
+        DECLARE @Propiedades TABLE
         (
-            -- Se obtiene la última lectura y la penúltima para calcular la diferencia
+              idPropiedad INT PRIMARY KEY,
+              numeroFinca NVARCHAR(64),
+              metrosCuadrados INT,
+              valorFiscal INT
+        );
+
+        INSERT INTO @Propiedades (idPropiedad, numeroFinca, metrosCuadrados, valorFiscal)
+        SELECT DISTINCT
+              p.id,
+              p.numeroFinca,
+              p.metrosCuadrados,
+              p.valorFiscal
+        FROM dbo.Propiedad p
+        JOIN dbo.CCPropiedad cp ON cp.PropiedadId = p.id AND cp.fechaFin IS NULL
+        WHERE NOT EXISTS
+        (
+            SELECT 1
+            FROM dbo.Factura f
+            WHERE f.idPropiedad = p.id
+              AND f.fecha >= @PrimerDiaMes
+              AND f.fecha <= @inFechaCorte
+        );
+
+        IF NOT EXISTS (SELECT 1 FROM @Propiedades)
+            RETURN;
+
+
+        ----------------------------------------------------------------------
+        -- 2) Crear FACTURAS
+        ----------------------------------------------------------------------
+        DECLARE @Facturas TABLE
+        (
+              idFactura INT,
+              idPropiedad INT,
+              numeroFinca NVARCHAR(64)
+        );
+
+        INSERT INTO dbo.Factura (idPropiedad, fecha, fechaVenc, totalOriginal, totalFinal, estado)
+        SELECT
+              p.idPropiedad,
+              @inFechaCorte,
+              DATEADD(DAY, 5, @inFechaCorte),
+              0, 0, 1
+        FROM @Propiedades p;
+
+        INSERT INTO @Facturas (idFactura, idPropiedad, numeroFinca)
+        SELECT
+              f.id,
+              f.idPropiedad,
+              p.numeroFinca
+        FROM dbo.Factura f
+        JOIN @Propiedades p ON p.idPropiedad = f.idPropiedad
+        WHERE f.fecha = @inFechaCorte;
+
+        ----------------------------------------------------------------------
+        -- 3) Obtener tarifas desde CC + Tarifa
+        ----------------------------------------------------------------------
+        ;WITH CCTarifas AS
+        (
             SELECT
-                m.idPropiedad,
-                m.numeroMedidor,
-                m.valor,
-                m.fecha,
-                LAG(m.valor, 1, 0) OVER ( --este lag se utiliza para calcular el consumo de agua al restar la lectura actual de la lectura inmediatamente anterior
-                PARTITION BY m.numeroMedidor
-                ORDER BY m.fecha ASC, m.id ASC
-            ) AS lecturaAnterior,
-                ROW_NUMBER() OVER (
-                PARTITION BY m.numeroMedidor
-                ORDER BY m.fecha DESC, m.id DESC
-            ) AS rn
-            FROM dbo.MovMedidor AS m
-            WHERE (m.fecha <= @inFechaCorte)
-                AND (m.idTipoMovimientoLecturaMedidor = 1)
-            -- Solo lecturas
-        )
-    INSERT INTO @Consumos
+                  cc.id AS idCC,
+                  cc.nombre AS nombreCC,
+                  cc.periodoMonto AS periodoMonto,
+                  cc.tipoMontoCC AS tipoMonto,
+                  t.monto AS montoTarifa
+            FROM dbo.CC cc
+            LEFT JOIN dbo.Tarifa t ON t.id = cc.idTarifa
+        ),
+
+        ----------------------------------------------------------------------
+        -- 4) Lecturas de agua (actual y anterior)
+        ----------------------------------------------------------------------
+        LecturaActual AS
         (
-        idPropiedad
-        ,consumoM3
-        ,lecturaAnt
-        ,lecturaAct
-        )
-    SELECT
-        l.idPropiedad,
-        (l.valor - l.lecturaAnterior) AS consumo,
-        l.lecturaAnterior,
-        l.valor
-    FROM Lecturas AS l
-    WHERE (l.rn = 1)
-        AND (l.valor > l.lecturaAnterior); -- Consumo positivo
-
-    -- 2 identificar propiedades a facturar
-
-    INSERT INTO @FacturasBase
+            SELECT
+                  p.idPropiedad,
+                  MAX(m.fecha) AS fechaActual
+            FROM @Propiedades p
+            LEFT JOIN dbo.MovMedidor m
+                ON m.idPropiedad = p.idPropiedad
+                AND m.fecha >= @PrimerDiaMes
+                AND m.fecha <= @inFechaCorte
+            GROUP BY p.idPropiedad
+        ),
+        ValorActual AS
         (
-        idPropiedad
-        ,fechaEmision
-        ,fechaVenc
-        )
-    SELECT
-        pr.id
-        , @fechaEmision
-        , @fechaVenc
-    FROM dbo.Propiedad AS pr
-    -- Solo propiedades que tienen ConsumoAgua activo O algún otro CC mensual
-    WHERE EXISTS
-    (
-        SELECT 1
-    FROM dbo.CCPropiedad AS ccp
-        JOIN dbo.CC AS cc ON cc.id = ccp.idCC
-    WHERE (ccp.PropiedadId = pr.id)
-        AND (ccp.fechaFin IS NULL)
-        AND (cc.PeriodoMontoCC = 1 OR cc.nombre = N'ConsumoAgua') -- PeriodoMontoCC=1 es Mensual
-    );
-
-    BEGIN TRAN;
-
-    INSERT INTO dbo.Factura
+            SELECT
+                  la.idPropiedad,
+                  m.valor AS lecturaActual
+            FROM LecturaActual la
+            LEFT JOIN dbo.MovMedidor m
+                ON m.idPropiedad = la.idPropiedad
+                AND m.fecha = la.fechaActual
+        ),
+        ValorAnterior AS
         (
-        idPropiedad
-        ,fecha
-        ,fechaVenc
-        ,totalOriginal -- Se actualizará más adelante
-        ,totalFinal -- Se actualizará más adelante
-        ,estado -- 1 = Pendiente
+            SELECT
+                  p.idPropiedad,
+                  ISNULL(
+                      (
+                          SELECT TOP 1 m2.valor
+                          FROM dbo.MovMedidor m2
+                          WHERE m2.idPropiedad = p.idPropiedad
+                            AND m2.fecha < @PrimerDiaMes
+                          ORDER BY m2.fecha DESC
+                      ), 0
+                  ) AS lecturaAnterior
+            FROM @Propiedades p
+        ),
+
+        ----------------------------------------------------------------------
+        -- 5) Unir todo lo necesario para facturar AGUA
+        ----------------------------------------------------------------------
+        Consumo AS
+        (
+            SELECT
+                  f.idFactura,
+                  f.idPropiedad,
+                  a.lecturaActual,
+                  b.lecturaAnterior
+            FROM @Facturas f
+            LEFT JOIN ValorActual a ON a.idPropiedad = f.idPropiedad
+            LEFT JOIN ValorAnterior b ON b.idPropiedad = f.idPropiedad
         )
-    OUTPUT 
-         inserted.id 
-        ,inserted.idPropiedad
-    INTO @FacturasNewIDs (idFactura, idPropiedad)
-    -- Capturar IDs generados
-    SELECT
-        fb.idPropiedad
-        , fb.fechaEmision
-        , fb.fechaVenc
-        , 0.0 -- Inicial
-        , 0.0 -- Inicial
-        , 1
-    -- Pendiente
-    FROM @FacturasBase AS fb;
 
-    -- Actualizar @FacturasBase con los IDs generados
-    UPDATE fb
-    SET fb.idFactura = nid.idFactura
-    FROM @FacturasBase AS fb
-        JOIN @FacturasNewIDs AS nid
-        ON nid.idPropiedad = fb.idPropiedad;
+        ----------------------------------------------------------------------
+        -- 6) Facturar CONSUMO DE AGUA
+        ----------------------------------------------------------------------
+        INSERT INTO dbo.DetalleFactura
+        (
+              idFactura,
+              idCC,
+              descripcion,
+              monto
+        )
+        SELECT
+              c.idFactura,
+              cc.idCC,
+              cc.nombreCC,
+              CASE 
+                  WHEN c.lecturaActual IS NULL THEN ct.montoTarifa
+                  ELSE 
+                  (
+                      -- cÃ¡lculo correcto segÃºn XML
+                      CASE 
+                          WHEN (c.lecturaActual - c.lecturaAnterior) <= 30
+                               THEN 500
+                          ELSE 500 + ((c.lecturaActual - c.lecturaAnterior) - 30) * 100
+                      END
+                  )
+              END
+        FROM Consumo c
+        JOIN dbo.CCPropiedad cp ON cp.PropiedadId = c.idPropiedad AND cp.fechaFin IS NULL
+        JOIN CCTarifas cc ON cc.idCC = cp.idCC AND cc.nombreCC = N'ConsumoAgua'
+        JOIN CCTarifas ct ON ct.idCC = cc.idCC;
 
-    -- 4 INSERCIÓN DE DETALLES DE FACTURA   
-    -- 4.1 CONSUMO DE AGUA 
-    INSERT INTO dbo.DetalleFactura
-        ( idFactura, idCC, descripcion, monto, m3Facturados )
-    SELECT
-        fb.idFactura, cc.id, cc.nombre,
-        CASE
-            WHEN c.consumoM3 <= cc_agua.ValorMinimoM3 THEN cc_agua.ValorMinimo
-            ELSE cc_agua.ValorMinimo + ((c.consumoM3 - cc_agua.ValorMinimoM3) * cc_agua.ValorFijoM3Adicional)
-        END AS monto,
-        c.consumoM3
-    FROM @FacturasBase AS fb
-        JOIN @Consumos AS c ON c.idPropiedad = fb.idPropiedad
-        JOIN dbo.CCPropiedad AS cp ON cp.PropiedadId = fb.idPropiedad AND cp.fechaFin IS NULL
-        JOIN dbo.CC AS cc ON cc.id = cp.idCC AND cc.nombre = N'ConsumoAgua'
-        JOIN dbo.CC_ConsumoAgua AS cc_agua ON cc_agua.id = cc.id;
 
-    -- 4.2 IMPUESTO DE PROPIEDAD (CC ID 3 - Trimestral / Porcentual)
-    INSERT INTO dbo.DetalleFactura
-        ( idFactura, idCC, descripcion, monto )
-    SELECT
-        fb.idFactura, cc.id, cc.nombre,
-        (pr.valorFiscal * cc_imp.ValorPorcentual) / 3.0
-    -- Cargo Mensual (1/3 de trimestre)
-    FROM @FacturasBase AS fb
-        JOIN dbo.Propiedad AS pr ON pr.id = fb.idPropiedad
-        JOIN dbo.CCPropiedad AS cp ON cp.PropiedadId = fb.idPropiedad AND cp.fechaFin IS NULL
-        JOIN dbo.CC AS cc ON cc.id = cp.idCC AND cc.nombre = N'ImpuestoPropiedad'
-        JOIN dbo.CC_ImpuestoPropiedad AS cc_imp ON cc_imp.id = cc.id;
+        ----------------------------------------------------------------------
+        -- 7) RecolecciÃ³n de Basura
+        ----------------------------------------------------------------------
+        INSERT INTO dbo.DetalleFactura (idFactura, idCC, descripcion, monto)
+        SELECT
+              f.idFactura,
+              cc.idCC,
+              cc.nombreCC,
+              CASE 
+                  WHEN p.metrosCuadrados <= 400 THEN 150
+                  ELSE 150 + CEILING( (p.metrosCuadrados - 400) / 75.0 ) * 300
+              END
+        FROM @Facturas f
+        JOIN @Propiedades p ON p.idPropiedad = f.idPropiedad
+        JOIN dbo.CCPropiedad cp ON cp.PropiedadId = f.idPropiedad AND cp.fechaFin IS NULL
+        JOIN CCTarifas cc ON cc.idCC = cp.idCC AND cc.nombreCC = N'RecoleccionBasura';
 
-    -- 4.3 PATENTE COMERCIAL (CC ID 2 - Trimestral / Valor Fijo)
-    INSERT INTO dbo.DetalleFactura
-        ( idFactura, idCC, descripcion, monto )
-    SELECT
-        fb.idFactura, cc.id, cc.nombre,
-        pc.ValorFijo / 3.0
-    -- Trimestral (PeriodoMontoCC=3) facturado mensual
-    FROM @FacturasBase AS fb
-        JOIN dbo.CCPropiedad AS cp ON cp.PropiedadId = fb.idPropiedad AND cp.fechaFin IS NULL
-        JOIN dbo.CC AS cc ON cc.id = cp.idCC AND cc.nombre = N'PatenteComercial'
-        JOIN dbo.CC_PatenteComercial AS pc ON pc.id = cc.id; 
 
-    -- 4.4 RECOLECCIÓN BASURA (CC ID 4 - Mensual / Valor Fijo + Tramos M2)
-    INSERT INTO dbo.DetalleFactura
-        ( idFactura, idCC, descripcion, monto )
-    SELECT
-        fb.idFactura, cc.id, cc.nombre,
-        CASE
-            WHEN pr.metrosCuadrados <= rb.ValorM2Minimo 
-            THEN rb.ValorMinimo
-            ELSE rb.ValorMinimo +
-                ((pr.metrosCuadrados - rb.ValorM2Minimo)* rb.ValorTramosM2)
-        END
-    FROM @FacturasBase AS fb
-        JOIN dbo.Propiedad AS pr ON pr.id = fb.idPropiedad
-        JOIN dbo.CCPropiedad AS cp ON cp.PropiedadId = fb.idPropiedad AND cp.fechaFin IS NULL
-        JOIN dbo.CC AS cc ON cc.id = cp.idCC AND cc.nombre = N'RecoleccionBasura'
-        JOIN dbo.CC_RecoleccionBasura AS rb ON rb.id = cc.id; 
+        ----------------------------------------------------------------------
+        -- 8) Mantenimiento Parques
+        ----------------------------------------------------------------------
+        INSERT INTO dbo.DetalleFactura (idFactura, idCC, descripcion, monto)
+        SELECT
+              f.idFactura,
+              cc.idCC,
+              cc.nombreCC,
+              cc.montoTarifa
+        FROM @Facturas f
+        JOIN dbo.CCPropiedad cp ON cp.PropiedadId = f.idPropiedad AND cp.fechaFin IS NULL
+        JOIN CCTarifas cc ON cc.idCC = cp.idCC AND cc.nombreCC = N'MantenimientoParques';
 
-    -- 4.5 MANTENIMIENTO PARQUES (CC ID 5 - Mensual / Valor Fijo)
-    INSERT INTO dbo.DetalleFactura
-        ( idFactura, idCC, descripcion, monto )
-    SELECT
-        fb.idFactura, cc.id, cc.nombre,
-        mp.ValorFijo
-    FROM @FacturasBase AS fb
-        JOIN dbo.CCPropiedad AS cp ON cp.PropiedadId = fb.idPropiedad AND cp.fechaFin IS NULL
-        JOIN dbo.CC AS cc ON cc.id = cp.idCC AND cc.nombre = N'MantenimientoParques'
-        JOIN dbo.CC_MantenimientoParques mp ON mp.id = cc.id
 
-    --4.6 reconexion (si aplica)
-     INSERT INTO dbo.DetalleFactura
-        ( idFactura, idCC, descripcion, monto )
-    SELECT
-        fb.idFactura, cc.id, cc.nombre, r.ValorFijo
-    FROM @FacturasBase AS fb
-        JOIN CCPropiedad cp ON cp.PropiedadId = fb.idPropiedad AND cp.fechaFin IS NULL
-        JOIN CC cc ON cc.id = cp.idCC AND cc.nombre = 'ReconexionAgua'
-        Join CC_ReconexionAgua r ON r.id = cc.id;
-    
-    -- 5 ACTUALIZAR TOTALES
-    -- 5.1 Recalcular el total por factura desde el DetalleFactura
-    ;WITH
-        Totales
-        AS
+        ----------------------------------------------------------------------
+        -- 9) Patente Comercial (trimestral â†’ prorrateo mensual)
+        ----------------------------------------------------------------------
+        INSERT INTO dbo.DetalleFactura (idFactura, idCC, descripcion, monto)
+        SELECT
+              f.idFactura,
+              cc.idCC,
+              cc.nombreCC,
+              (cc.montoTarifa / 3)
+        FROM @Facturas f
+        JOIN dbo.CCPropiedad cp ON cp.PropiedadId = f.idPropiedad AND cp.fechaFin IS NULL
+        JOIN CCTarifas cc ON cc.idCC = cp.idCC AND cc.nombreCC = N'PatenteComercial';
+
+
+        ----------------------------------------------------------------------
+        -- 10) Impuesto Propiedad (anual â†’ prorrateo mensual)
+        ----------------------------------------------------------------------
+        INSERT INTO dbo.DetalleFactura (idFactura, idCC, descripcion, monto)
+        SELECT
+              f.idFactura,
+              cc.idCC,
+              cc.nombreCC,
+              (p.valorFiscal * 0.01) / 12
+        FROM @Facturas f
+        JOIN @Propiedades p ON p.idPropiedad = f.idPropiedad
+        JOIN dbo.CCPropiedad cp ON cp.PropiedadId = f.idPropiedad AND cp.fechaFin IS NULL
+        JOIN CCTarifas cc ON cc.idCC = cp.idCC AND cc.nombreCC = N'ImpuestoPropiedad';
+
+
+        ----------------------------------------------------------------------
+        -- 11) Actualizar totales
+        ----------------------------------------------------------------------
+        UPDATE f
+        SET 
+            f.totalOriginal = x.total,
+            f.totalFinal = x.total
+        FROM dbo.Factura f
+        JOIN
         (
             SELECT idFactura, SUM(monto) AS total
             FROM dbo.DetalleFactura
-            WHERE idFactura IN (SELECT idFactura
-            FROM @FacturasBase)
-            -- Solo las que acabamos de crear
             GROUP BY idFactura
-        )
-    -- 5.2 Actualizar las facturas recién creadas
-    UPDATE f
-    SET f.totalOriginal = t.total,
-        f.totalFinal = t.total      -- Inicialmente, final es igual al original
-    FROM dbo.Factura AS f
-        JOIN Totales AS t
-        ON t.idFactura = f.id;
+        ) x ON x.idFactura = f.id;
 
-    COMMIT TRAN;
+    END TRY
+    BEGIN CATCH
+        SET @outResultCode = 54000;
 
-END TRY
-BEGIN CATCH
-
-    IF (XACT_STATE() <> 0)
-        ROLLBACK TRAN;
-
-    INSERT INTO dbo.DBErrors
+        INSERT INTO dbo.DBErrors
         (
-        UserName, Number, State, Severity, [Line], [Procedure], Message, DateTime
+              UserName, Number, State, Severity, [Line],
+              [Procedure], Message, DateTime
         )
-    VALUES
+        VALUES
         (
-            SUSER_SNAME(), ERROR_NUMBER(), ERROR_STATE(), ERROR_SEVERITY(), ERROR_LINE(),
-            ERROR_PROCEDURE(), ERROR_MESSAGE(), SYSDATETIME()
-    );
+              SUSER_SNAME(),
+              ERROR_NUMBER(),
+              ERROR_STATE(),
+              ERROR_SEVERITY(),
+              ERROR_LINE(),
+              ERROR_PROCEDURE(),
+              ERROR_MESSAGE(),
+              SYSDATETIME()
+        );
 
-    SET @outResultCode = 60003;
-    THROW;
-END CATCH
+    END CATCH
 END;
 GO
+
+EXEC dbo.usp_FacturacionMensualMasiva
+    @inFechaCorte = '2024-01-31',
+    @outResultCode = NULL;

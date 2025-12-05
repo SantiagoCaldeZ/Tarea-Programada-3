@@ -1,140 +1,176 @@
 ﻿CREATE OR ALTER PROCEDURE dbo.usp_AplicacionPagosMasiva
 (
-    @inFechaCorte   DATE,
-    @outResultCode  INT OUTPUT
+      @inFechaCorte   DATE,
+      @outResultCode  INT OUTPUT
 )
 AS
 BEGIN
     SET NOCOUNT ON;
     SET @outResultCode = 0;
 
-    -- Mantener tabla variable (no viola estándar)
-    DECLARE @PagosNoFactura TABLE
-    (
-        idPago          INT PRIMARY KEY,
-        numeroFinca     NVARCHAR(50),
-        monto           MONEY,
-        idFacturaActual INT
-    );
-
     BEGIN TRY
 
         ----------------------------------------------------------------------
-        -- 1) Cargar pagos sin factura hasta la fecha de corte
+        -- 1) Pagos del día que no han sido aplicados
         ----------------------------------------------------------------------
-        INSERT INTO @PagosNoFactura (idPago, numeroFinca, monto, idFacturaActual)
-        SELECT
-            P.id,
-            P.numeroFinca,
-            P.monto,
-            P.idFactura
-        FROM dbo.Pago AS P
-        WHERE P.idFactura IS NULL
-          AND P.fecha <= @inFechaCorte;
-
-
-        BEGIN TRAN;
-
-        ----------------------------------------------------------------------
-        -- 2) Asignar a cada pago la factura pendiente más vieja de esa finca
-        ----------------------------------------------------------------------
-        UPDATE PNF
-        SET PNF.idFacturaActual = F.id
-        FROM @PagosNoFactura AS PNF
-        OUTER APPLY
+        DECLARE @Pagos TABLE
         (
-            SELECT TOP (1)
-                F.id
-            FROM dbo.Factura AS F
-            JOIN dbo.Propiedad AS PR
-              ON PR.id = F.idPropiedad
-            WHERE PR.numeroFinca = PNF.numeroFinca
-              AND F.estado = 1      -- Pendiente
-              AND F.totalFinal > 0
-            ORDER BY F.fecha ASC
-        ) AS F;
+              idPago           INT PRIMARY KEY,
+              numeroFinca      NVARCHAR(64),
+              montoPago        MONEY,
+              numeroReferencia NVARCHAR(64)
+        );
+
+        INSERT INTO @Pagos (idPago, numeroFinca, montoPago, numeroReferencia)
+        SELECT 
+              p.id,
+              p.numeroFinca,
+              ISNULL(p.monto, 0.0),
+              p.numeroReferencia
+        FROM dbo.Pago AS p
+        WHERE p.fecha = @inFechaCorte
+          AND p.idFactura IS NULL;
 
 
         ----------------------------------------------------------------------
-        -- 3) Actualizar Pago.idFactura si está vacío
+        -- 2) Facturas pendientes (solo columnas necesarias)
         ----------------------------------------------------------------------
-        UPDATE P
-        SET P.idFactura = PNF.idFacturaActual
-        FROM dbo.Pago AS P
-        JOIN @PagosNoFactura AS PNF
-          ON P.id = PNF.idPago
-        WHERE P.idFactura IS NULL;
-
-
-        ----------------------------------------------------------------------
-        -- 4) Asegurar que NINGÚN pago tenga monto NULL
-        ----------------------------------------------------------------------
-        -- 4A) Si monto es NULL → tomar totalFinal de factura
-        UPDATE P
-        SET P.monto = F.totalFinal
-        FROM dbo.Pago AS P
-        JOIN dbo.Factura AS F
-          ON F.id = P.idFactura
-        WHERE P.fecha <= @inFechaCorte
-          AND (P.monto IS NULL OR P.monto = 0);
-
-        -- 4B) Si aún no hay factura asignada → NO PUEDE quedar NULL
-        --     Usamos monto = 0 como fallback seguro
-        UPDATE P
-        SET P.monto = 0
-        FROM dbo.Pago AS P
-        WHERE P.fecha <= @inFechaCorte
-          AND (P.monto IS NULL);
-
-
+        ;WITH FacturasPendientes AS
+        (
+            SELECT 
+                  f.id            AS idFactura,
+                  f.totalFinal    AS saldoFactura,
+                  f.idPropiedad   AS idPropiedad,
+                  f.fecha         AS fechaFactura,
+                  f.fechaVenc     AS fechaVencimiento,
+                  pr.numeroFinca  AS numeroFinca
+            FROM dbo.Factura AS f
+            INNER JOIN dbo.Propiedad AS pr
+                ON pr.id = f.idPropiedad
+            WHERE f.totalFinal > 0
+        ),
 
         ----------------------------------------------------------------------
-        -- 5) Marcar facturas pagadas
+        -- 3) Expandir pagos → facturas (sin SELECT * y sin ORDER BY prohibido)
         ----------------------------------------------------------------------
-        UPDATE F
-        SET F.estado = 2
-        FROM dbo.Factura AS F
-        JOIN dbo.Pago AS P
-          ON P.idFactura = F.id
-        WHERE F.estado = 1
-          AND P.fecha <= @inFechaCorte;
+        Expansiones AS
+        (
+            SELECT
+                  p.idPago,
+                  p.montoPago,
+                  fp.idFactura,
+                  fp.saldoFactura,
+                  fp.fechaFactura,
+                  fp.fechaVencimiento,
+                  p.numeroReferencia
+            FROM @Pagos AS p
+            CROSS APPLY
+            (
+                SELECT 
+                      fp.idFactura,
+                      fp.saldoFactura,
+                      fp.fechaFactura,
+                      fp.fechaVencimiento
+                FROM FacturasPendientes AS fp
+                WHERE fp.numeroFinca = p.numeroFinca
+            ) AS fp
+        ),
+
+        ----------------------------------------------------------------------
+        -- 4) Running sum ordenado correctamente en la ventana (permitido)
+        ----------------------------------------------------------------------
+        Calculos AS
+        (
+            SELECT
+                  e.idPago,
+                  e.montoPago,
+                  e.idFactura,
+                  e.saldoFactura,
+                  e.fechaFactura,
+                  e.fechaVencimiento,
+                  e.numeroReferencia,
+                  SUM(e.saldoFactura) OVER
+                  (
+                      PARTITION BY e.idPago
+                      ORDER BY e.fechaFactura, e.fechaVencimiento
+                      ROWS UNBOUNDED PRECEDING
+                  ) AS saldoAcumulado
+            FROM Expansiones AS e
+        ),
+
+        ----------------------------------------------------------------------
+        -- 5) Monto aplicado a cada factura (sin SELECT *)
+        ----------------------------------------------------------------------
+        Aplicaciones AS
+        (
+            SELECT
+                  c.idPago,
+                  c.idFactura,
+                  c.montoPago,
+                  c.saldoFactura,
+                  c.saldoAcumulado,
+                  c.numeroReferencia,
+                  CASE
+                      WHEN c.saldoAcumulado - c.saldoFactura >= c.montoPago THEN 0
+                      WHEN c.saldoAcumulado <= c.montoPago THEN c.saldoFactura
+                      ELSE c.montoPago - (c.saldoAcumulado - c.saldoFactura)
+                  END AS montoAplicado
+            FROM Calculos AS c
+        )
+
+        ----------------------------------------------------------------------
+        -- 6) Actualización set-based de facturas
+        ----------------------------------------------------------------------
+        UPDATE f
+        SET 
+            f.totalFinal = f.totalFinal - a.montoAplicado,
+            f.estado = CASE 
+                           WHEN f.totalFinal - a.montoAplicado = 0 THEN 4 
+                           ELSE f.estado 
+                       END
+        FROM dbo.Factura AS f
+        INNER JOIN Aplicaciones AS a 
+            ON a.idFactura = f.id
+        WHERE a.montoAplicado > 0;
 
 
         ----------------------------------------------------------------------
-        -- 6) Crear comprobantes de pago
-        --    (AQUÍ ES DONDE FALLABA POR monto NULL)
+        -- 7) Insertar un comprobante por cada pago (no por factura)
         ----------------------------------------------------------------------
-        INSERT INTO dbo.ComprobantePago (idPago, fecha, monto, numeroReferencia)
+        INSERT INTO dbo.ComprobantePago
+        (
+              idPago,
+              monto,
+              numeroReferencia
+        )
         SELECT
-            P.id,
-            P.fecha,
-            P.monto,              -- YA NUNCA SERÁ NULL
-            P.numeroReferencia
-        FROM dbo.Pago AS P
-        WHERE P.fecha <= @inFechaCorte
-          AND NOT EXISTS
-              (SELECT 1 FROM dbo.ComprobantePago AS C WHERE C.idPago = P.id);
-
-        COMMIT TRAN;
+              p.idPago,
+              p.montoPago,
+              p.numeroReferencia
+        FROM @Pagos AS p;
 
     END TRY
-
     BEGIN CATCH
-        IF (XACT_STATE() <> 0)
-            ROLLBACK TRAN;
 
-        SET @outResultCode = 70001;
+        SET @outResultCode = 50030;
 
         INSERT INTO dbo.DBErrors
         (
-            UserName, Number, State, Severity, [Line], [Procedure],
-            Message, DateTime
+              UserName, Number, State, Severity, [Line],
+              [Procedure], Message, DateTime
         )
         VALUES
         (
-            SUSER_SNAME(), ERROR_NUMBER(), ERROR_STATE(), ERROR_SEVERITY(),
-            ERROR_LINE(), ERROR_PROCEDURE(), ERROR_MESSAGE(), SYSDATETIME()
+              SUSER_SNAME(),
+              ERROR_NUMBER(),
+              ERROR_STATE(),
+              ERROR_SEVERITY(),
+              ERROR_LINE(),
+              ERROR_PROCEDURE(),
+              ERROR_MESSAGE(),
+              SYSDATETIME()
         );
-    END CATCH;
+
+    END CATCH
 END;
 GO
