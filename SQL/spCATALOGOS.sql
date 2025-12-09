@@ -394,21 +394,20 @@ BEGIN
         /* Usuario admin desde <UsuarioAdmin> */
         INSERT INTO dbo.Usuario
         (
-            id
-          , ValorDocumento
-          , idTipoUsuario
+              id
+            , ValorDocumento
+            , idTipoUsuario
         )
         SELECT
-            T.N.value('@id', 'int')
-          , T.N.value('@nombre', N'nvarchar(32)')   -- puedes cambiarlo a algún valorDocumento fijo si prefieres
-          , 1                                       -- Administrador
+              (SELECT ISNULL(MAX(id),0) + 1 FROM dbo.Usuario)   -- generar ID manual
+            , T.N.value('@nombre', N'nvarchar(32)')              -- lo usas como ValorDocumento
+            , 1                                                  -- tipo usuario admin
         FROM @xml.nodes('/Catalogos/UsuarioAdmin/Admin') AS T(N)
         WHERE NOT EXISTS
         (
-            SELECT
-                1
+            SELECT 1
             FROM dbo.Usuario AS u
-            WHERE u.id = T.N.value('@id', 'int')
+            WHERE u.ValorDocumento = T.N.value('@nombre', N'nvarchar(32)')
         );
 
         COMMIT TRAN;

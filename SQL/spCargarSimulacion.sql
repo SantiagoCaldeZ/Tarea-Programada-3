@@ -26,7 +26,7 @@ BEGIN
     END;
 
     ------------------------------------------------------------
-    -- 2) Fechas únicas de simulación
+    -- 2) Fechas únicas
     ------------------------------------------------------------
     DECLARE @Fechas TABLE
     (
@@ -42,12 +42,12 @@ BEGIN
     DECLARE @idFecha    INT = 1;
 
     ------------------------------------------------------------
-    -- 3) Desactivar trigger para evitar auto-asignación CC default
+    -- 3) Desactivar trigger CC default
     ------------------------------------------------------------
     DISABLE TRIGGER TR_Propiedad_AI_AsociaCCDefault ON dbo.Propiedad;
 
     ------------------------------------------------------------
-    -- 4) Simulación completa en transacción
+    -- 4) Simulación
     ------------------------------------------------------------
     BEGIN TRY
         BEGIN TRAN;
@@ -58,9 +58,9 @@ BEGIN
             FROM @Fechas
             WHERE idFecha = @idFecha;
 
-            --------------------------------------------------------
-            -- A) PERSONAS
-            --------------------------------------------------------
+    --------------------------------------------------------
+    -- A) PERSONAS  (CORREGIDO)
+    --------------------------------------------------------
             ;WITH FA AS
             (
                 SELECT FN.N.query('.') AS FechaNode
@@ -82,9 +82,9 @@ BEGIN
                 WHERE x.valorDocumento = P.N.value('@valorDocumento','nvarchar(32)')
             );
 
-            --------------------------------------------------------
-            -- B) PROPIEDADES
-            --------------------------------------------------------
+    --------------------------------------------------------
+    -- B) PROPIEDADES 
+    --------------------------------------------------------
             ;WITH FA AS
             (
                 SELECT FN.N.query('.') AS FechaNode
@@ -118,43 +118,37 @@ BEGIN
                 WHERE x.numeroFinca = P.N.value('@numeroFinca','nvarchar(64)')
             );
 
-            --------------------------------------------------------
-            -- C) USUARIOS (un solo registro por persona)
-            --------------------------------------------------------
+    --------------------------------------------------------
+    -- C) USUARIOS 
+    --------------------------------------------------------
             ;WITH FA AS
             (
                 SELECT FN.N.query('.') AS FechaNode
                 FROM @xml.nodes('/Operaciones/FechaOperacion') FN(N)
                 WHERE FN.N.value('@fecha','date') = @fechaActual
             )
-            -- insertar si no existe
             INSERT INTO dbo.Usuario (ValorDocumento, idTipoUsuario)
             SELECT
-                  U.N.value('@ValorDocumentoIdentidad','nvarchar(32)')
-                , U.N.value('@TipoUsuario','int')
+                  U.N.value('@valorDocumentoIdentidad','nvarchar(32)')
+                , U.N.value('@tipoUsuario','int')
             FROM FA
             CROSS APPLY FA.FechaNode.nodes('Usuarios/Usuario') U(N)
             WHERE NOT EXISTS
             (
                 SELECT 1
                 FROM dbo.Usuario X
-                WHERE X.ValorDocumento = U.N.value('@ValorDocumentoIdentidad','nvarchar(32)')
+                WHERE X.ValorDocumento = U.N.value('@valorDocumentoIdentidad','nvarchar(32)')
             );
 
-            -- actualizar tipoUsuario si ya existía
-            ;WITH FA AS
-            (
-                SELECT FN.N.query('.') AS FechaNode
-                FROM @xml.nodes('/Operaciones/FechaOperacion') FN(N)
-                WHERE FN.N.value('@fecha','date') = @fechaActual
-            ),
-            MovU AS
+            -- Update si ya existe
+            ;WITH MovU AS
             (
                 SELECT
-                      U.N.value('@ValorDocumentoIdentidad','nvarchar(32)') AS valorDoc
-                    , U.N.value('@TipoUsuario','int')                       AS tipoUsuario
-                FROM FA
-                CROSS APPLY FA.FechaNode.nodes('Usuarios/Usuario') U(N)
+                      U.N.value('@valorDocumentoIdentidad','nvarchar(32)') AS valorDoc
+                    , U.N.value('@tipoUsuario','int')                       AS tipoUsuario
+                FROM @xml.nodes('/Operaciones/FechaOperacion') FN(N)
+                CROSS APPLY FN.N.nodes('Usuarios/Usuario') U(N)
+                WHERE FN.N.value('@fecha','date') = @fechaActual
             )
             UPDATE dbo.Usuario
             SET idTipoUsuario = M.tipoUsuario
@@ -162,78 +156,21 @@ BEGIN
             WHERE Usuario.ValorDocumento = M.valorDoc
               AND Usuario.idTipoUsuario <> M.tipoUsuario;
 
-            --------------------------------------------------------
-            -- D) USUARIO–PROPIEDAD
-            --------------------------------------------------------
-            ;WITH MovUP AS
-            (
-                SELECT
-                      FN.N.value('@fecha','date') AS fechaOp
-                    , T.N.value('@ValorDocumentoIdentidad','nvarchar(32)') AS valorDocumento
-                    , T.N.value('@numeroFinca','nvarchar(64)')             AS finca
-                    , T.N.value('@TipoAsociacion','int')                   AS tipoAsoc
-                FROM @xml.nodes('/Operaciones/FechaOperacion') FN(N)
-                CROSS APPLY FN.N.nodes('UsuarioPropiedad/Movimiento') T(N)
-                WHERE FN.N.value('@fecha','date') = @fechaActual
-            )
-            -- asociar
-            INSERT INTO dbo.UsuarioPropiedad (idUsuario, idPropiedad, fechaInicio, fechaFin)
-            SELECT
-                  U.id
-                , P.id
-                , @fechaActual
-                , NULL
-            FROM MovUP M
-            JOIN dbo.Usuario   U ON U.ValorDocumento = M.valorDocumento
-            JOIN dbo.Propiedad P ON P.numeroFinca    = M.finca
-            WHERE M.tipoAsoc = 1
-              AND NOT EXISTS
-              (
-                SELECT 1
-                FROM dbo.UsuarioPropiedad X
-                WHERE X.idUsuario  = U.id
-                  AND X.idPropiedad = P.id
-                  AND X.fechaFin IS NULL
-              );
-
-            -- desasociar
-            ;WITH MovUP AS
-            (
-                SELECT
-                      FN.N.value('@fecha','date') AS fechaOp
-                    , T.N.value('@ValorDocumentoIdentidad','nvarchar(32)') AS valorDocumento
-                    , T.N.value('@numeroFinca','nvarchar(64)')             AS finca
-                    , T.N.value('@TipoAsociacion','int')                   AS tipoAsoc
-                FROM @xml.nodes('/Operaciones/FechaOperacion') FN(N)
-                CROSS APPLY FN.N.nodes('UsuarioPropiedad/Movimiento') T(N)
-                WHERE FN.N.value('@fecha','date') = @fechaActual
-            )
-            UPDATE UP
-            SET UP.fechaFin = @fechaActual
-            FROM MovUP M
-            JOIN dbo.Usuario U     ON U.ValorDocumento = M.valorDocumento
-            JOIN dbo.Propiedad P   ON P.numeroFinca    = M.finca
-            JOIN dbo.UsuarioPropiedad UP
-                 ON UP.idUsuario   = U.id
-                AND UP.idPropiedad = P.id
-            WHERE M.tipoAsoc = 2
-              AND UP.fechaFin IS NULL;
-
-            --------------------------------------------------------
-            -- E) PROPIEDAD–PERSONA
-            --------------------------------------------------------
+            
+    --------------------------------------------------------
+    -- E) PROPIEDAD–PERSONA
+    --------------------------------------------------------
             ;WITH MovPP AS
             (
                 SELECT
                       FN.N.value('@fecha','date') AS fechaOp
                     , T.N.value('@valorDocumento','nvarchar(32)') AS valorDoc
-                    , T.N.value('@numeroFinca','nvarchar(64)')     AS finca
-                    , T.N.value('@tipoAsociacionId','int')        AS tipoAsoc
+                    , T.N.value('@numeroFinca','nvarchar(64)') AS finca
+                    , T.N.value('@tipoAsociacionId','int') AS tipoAsoc
                 FROM @xml.nodes('/Operaciones/FechaOperacion') FN(N)
                 CROSS APPLY FN.N.nodes('PropiedadPersona/Movimiento') T(N)
                 WHERE FN.N.value('@fecha','date') = @fechaActual
             )
-            -- asociar
             INSERT INTO dbo.PropiedadPersona
             (
                   id
@@ -262,14 +199,13 @@ BEGIN
                   AND X.fechaFin IS NULL
               );
 
-            -- desasociar
             ;WITH MovPP AS
             (
                 SELECT
                       FN.N.value('@fecha','date') AS fechaOp
                     , T.N.value('@valorDocumento','nvarchar(32)') AS valorDoc
-                    , T.N.value('@numeroFinca','nvarchar(64)')     AS finca
-                    , T.N.value('@tipoAsociacionId','int')        AS tipoAsoc
+                    , T.N.value('@numeroFinca','nvarchar(64)') AS finca
+                    , T.N.value('@tipoAsociacionId','int') AS tipoAsoc
                 FROM @xml.nodes('/Operaciones/FechaOperacion') FN(N)
                 CROSS APPLY FN.N.nodes('PropiedadPersona/Movimiento') T(N)
                 WHERE FN.N.value('@fecha','date') = @fechaActual
@@ -285,21 +221,20 @@ BEGIN
             WHERE M.tipoAsoc = 2
               AND PP.fechaFin IS NULL;
 
-            --------------------------------------------------------
-            -- F) CC–PROPIEDAD + EVENTO
-            --------------------------------------------------------
+    --------------------------------------------------------
+    -- F) CC–PROPIEDAD + EVENTO
+    --------------------------------------------------------
             ;WITH MovCC AS
             (
                 SELECT
                       FN.N.value('@fecha','date') AS fechaOp
                     , T.N.value('@numeroFinca','nvarchar(64)') AS finca
                     , T.N.value('@idCC','int')                 AS idCC
-                    , T.N.value('@tipoAsociacionId','int')     AS tipoAsoc
+                    , T.N.value('@tipoAsociacionId','int')       AS tipoAsoc
                 FROM @xml.nodes('/Operaciones/FechaOperacion') FN(N)
                 CROSS APPLY FN.N.nodes('CCPropiedad/Movimiento') T(N)
                 WHERE FN.N.value('@fecha','date') = @fechaActual
             )
-            -- asociar
             INSERT INTO dbo.CCPropiedad
             (
                   numeroFinca
@@ -326,14 +261,13 @@ BEGIN
                   AND X.fechaFin IS NULL
               );
 
-            -- desasociar
             ;WITH MovCC AS
             (
                 SELECT
                       FN.N.value('@fecha','date') AS fechaOp
                     , T.N.value('@numeroFinca','nvarchar(64)') AS finca
-                    , T.N.value('@idCC','int')                 AS idCC
-                    , T.N.value('@tipoAsociacionId','int')     AS tipoAsoc
+                    , T.N.value('@idCc','int')                 AS idCC
+                    , T.N.value('@tipoAsociacion','int')       AS tipoAsoc
                 FROM @xml.nodes('/Operaciones/FechaOperacion') FN(N)
                 CROSS APPLY FN.N.nodes('CCPropiedad/Movimiento') T(N)
                 WHERE FN.N.value('@fecha','date') = @fechaActual
@@ -348,14 +282,16 @@ BEGIN
             WHERE M.tipoAsoc = 2
               AND CP.fechaFin IS NULL;
 
-            -- evento
+            --------------------------------------------------------
+            -- Evento histórico
+            --------------------------------------------------------
             ;WITH MovCC AS
             (
                 SELECT
                       FN.N.value('@fecha','date') AS fechaOp
                     , T.N.value('@numeroFinca','nvarchar(64)') AS finca
                     , T.N.value('@idCC','int')                 AS idCC
-                    , T.N.value('@tipoAsociacionId','int')     AS tipoAsoc
+                    , T.N.value('@tipoAsociacionId','int')       AS tipoAsoc
                 FROM @xml.nodes('/Operaciones/FechaOperacion') FN(N)
                 CROSS APPLY FN.N.nodes('CCPropiedad/Movimiento') T(N)
                 WHERE FN.N.value('@fecha','date') = @fechaActual
@@ -369,9 +305,9 @@ BEGIN
             FROM MovCC M
             JOIN dbo.Propiedad PR ON PR.numeroFinca = M.finca;
 
-            --------------------------------------------------------
-            -- G) CAMBIO DE VALOR FISCAL
-            --------------------------------------------------------
+    --------------------------------------------------------
+    -- G) CAMBIO DE VALOR FISCAL
+    --------------------------------------------------------
             ;WITH MovCamb AS
             (
                 SELECT
@@ -387,9 +323,9 @@ BEGIN
             FROM MovCamb M
             JOIN dbo.Propiedad P ON P.numeroFinca = M.finca;
 
-            --------------------------------------------------------
-            -- H) MOVIMIENTOS DE MEDIDOR
-            --------------------------------------------------------
+    --------------------------------------------------------
+    -- H) MOVIMIENTOS DE MEDIDOR
+    --------------------------------------------------------
             ;WITH MovLect AS
             (
                 SELECT
@@ -423,21 +359,72 @@ BEGIN
             FROM MovLect M
             LEFT JOIN dbo.Propiedad P ON P.numeroMedidor = M.medidor;
 
-            --------------------------------------------------------
-            -- I) PAGOS
-            --------------------------------------------------------
+    --------------------------------------------------------
+    -- I) PAGOS
+    --------------------------------------------------------
+            DECLARE @MovPago TABLE
+            (
+                  fechaOp      DATE
+                , finca        NVARCHAR(64)
+                , tipoMedio    INT
+                , ref          NVARCHAR(64)
+                , monto        MONEY
+            );
+
             ;WITH MovPago AS
             (
                 SELECT
                       FN.N.value('@fecha','date') AS fechaOp
-                    , T.N.value('@numeroFinca','nvarchar(64)')     AS finca
-                    , T.N.value('@tipoMedioPagoId','int')          AS tipoMedio
+                    , T.N.value('@numeroFinca','nvarchar(64)') AS finca
+                    , T.N.value('@tipoMedioPagoId','int')      AS tipoMedio
                     , T.N.value('@numeroReferencia','nvarchar(64)') AS ref
-                    , T.N.value('@monto','money')                   AS monto
+                    , T.N.value('@monto','money')              AS monto
                 FROM @xml.nodes('/Operaciones/FechaOperacion') FN(N)
                 CROSS APPLY FN.N.nodes('Pagos/Pago') T(N)
                 WHERE FN.N.value('@fecha','date') = @fechaActual
             )
+            INSERT INTO @MovPago
+            (
+                  fechaOp
+                , finca
+                , tipoMedio
+                , ref
+                , monto
+            )
+            SELECT fechaOp, finca, tipoMedio, ref, monto
+            FROM MovPago;
+
+            ------------------------------------------------------
+            -- Crear propiedades faltantes si vienen en Pagos
+            ------------------------------------------------------
+            INSERT INTO dbo.Propiedad
+            (
+                  numeroFinca
+                , metrosCuadrados
+                , idTipoUsoPropiedad
+                , idTipoZonaPropiedad
+                , valorFiscal
+                , fechaRegistro
+                , numeroMedidor
+            )
+            SELECT DISTINCT
+                  M.finca
+                , 1
+                , 1
+                , 1
+                , 0
+                , @fechaActual
+                , CONCAT('MED-', M.finca) 
+            FROM @MovPago M
+            WHERE NOT EXISTS
+            (
+                SELECT 1 FROM dbo.Propiedad P
+                WHERE P.numeroFinca = M.finca
+            );
+
+            ------------------------------------------------------
+            -- Insertar pagos
+            ------------------------------------------------------
             INSERT INTO dbo.Pago
             (
                   numeroFinca
@@ -448,51 +435,47 @@ BEGIN
                 , monto
             )
             SELECT
-                  M.finca
-                , M.tipoMedio
-                , M.ref
+                  finca
+                , tipoMedio
+                , ref
                 , NULL
                 , @fechaActual
-                , M.monto
-            FROM MovPago M
+                , monto
+            FROM @MovPago
             WHERE NOT EXISTS
             (
                 SELECT 1
                 FROM dbo.Pago X
-                WHERE X.numeroReferencia = M.ref
+                WHERE X.numeroReferencia = ref
             );
-
-            -- 1) CÁLCULO DE INTERESES MORATORIOS
+    
+                --------------------------------------------------------
+    -- PROCESOS MASIVOS (sin cambios)
+    --------------------------------------------------------
             EXEC dbo.usp_CalculoInteresesMasivo
                 @inFechaCorte   = @fechaActual,
                 @outResultCode  = @outResultCode OUTPUT;
 
-            -- 2) APLICACIÓN DE PAGOS
             EXEC dbo.usp_AplicacionPagosMasiva
                 @inFechaCorte   = @fechaActual,
                 @outResultCode  = @outResultCode OUTPUT;
 
-            -- 3) PROCESAR RECONEXIONES DESPUÉS DE PAGOS (PDF lo indica)
             EXEC dbo.usp_ReconexionMasiva
                 @inFechaCorte   = @fechaActual,
                 @outResultCode  = @outResultCode OUTPUT;
 
-            -- 4) FACTURACIÓN MENSUAL (solo si aplica por día de corte)
             EXEC dbo.usp_FacturacionMensualMasiva
                 @inFechaCorte   = @fechaActual,
                 @outResultCode  = @outResultCode OUTPUT;
 
-            -- 5) GENERAR ORDEN DE CORTE DE AGUA
             EXEC dbo.usp_CorteMasivoAgua
                 @inFechaCorte   = @fechaActual,
                 @outResultCode  = @outResultCode OUTPUT;
 
-            -- 6) RECONEXIÓN NUEVAMENTE DESPUÉS DE CORTES
             EXEC dbo.usp_ReconexionMasiva
                 @inFechaCorte   = @fechaActual,
                 @outResultCode  = @outResultCode OUTPUT;
 
-            -- 7) CIERRE DE MES SOLO SI ES FIN DE MES
             IF (@fechaActual = EOMONTH(@fechaActual))
             BEGIN
                 EXEC dbo.usp_CerrarMesMasivo
@@ -504,11 +487,11 @@ BEGIN
             -- Siguiente fecha
             --------------------------------------------------------
             SET @idFecha += 1;
-        END;
+        END; -- WHILE fechas
 
-        ------------------------------------------------------------
+        --------------------------------------------------------
         -- Reactivar trigger
-        ------------------------------------------------------------
+        --------------------------------------------------------
         ENABLE TRIGGER TR_Propiedad_AI_AsociaCCDefault ON dbo.Propiedad;
 
         COMMIT TRAN;
@@ -544,6 +527,7 @@ BEGIN
     END CATCH;
 END;
 GO
+
 
 -- EJECUCIÓN DEL SP
 DECLARE @rc INT;

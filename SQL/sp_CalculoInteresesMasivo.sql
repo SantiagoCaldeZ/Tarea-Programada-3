@@ -1,7 +1,7 @@
-ALTER   PROCEDURE [dbo].[usp_CalculoInteresesMasivo]
-    (
-    @inFechaCorte   DATE,
-    @outResultCode  INT OUTPUT
+CREATE OR ALTER PROCEDURE dbo.usp_CalculoInteresesMasivo
+(
+      @inFechaCorte   DATE,
+      @outResultCode  INT OUTPUT
 )
 AS
 BEGIN
@@ -16,50 +16,49 @@ BEGIN
         ----------------------------------------------------------------------
         DECLARE @Intereses TABLE
         (
-        idFactura INT,
-        interesDia MONEY
+              idFactura INT,
+              interesDia MONEY
         );
 
         ----------------------------------------------------------------------
         -- 1) Facturas en mora con saldo pendiente real
         ----------------------------------------------------------------------
-        ;WITH
-        FacturasPendientes
+        ;WITH 
+        FacturasPendientes 
         AS
         (
             SELECT
-                f.id
+                  f.id
                 , f.fechaVenc
                 , f.totalFinal
                 , COALESCE(SUM(p.monto), 0.0) AS pagosAplicados
-            --devuelve el primer valor no nulo, en caso de existir un nulo se coloca un 0.0
             FROM dbo.Factura AS f
                 LEFT JOIN dbo.Pago AS p
                 ON p.idFactura = f.id
             WHERE f.estado = 3
             GROUP BY f.id, f.fechaVenc, f.totalFinal
         ),
-        FacturasConSaldo
+        FacturasConSaldo 
         AS
         (
             SELECT
-                fp.id
+                  fp.id
                 , fp.fechaVenc
                 , (fp.totalFinal - fp.pagosAplicados) AS saldoPendiente
             FROM FacturasPendientes AS fp
             WHERE (fp.totalFinal - fp.pagosAplicados) > 0
         ),
-        CCPrincipal
+        CCPrincipal 
         AS
         (
             SELECT
-                fcs.id AS idFactura
+                  fcs.id AS idFactura
                 , df0.idCC AS idCC
                 , fcs.saldoPendiente
                 , fcs.fechaVenc
             FROM FacturasConSaldo AS fcs
-                JOIN
-                (
+            JOIN
+            (
                 SELECT idFactura, MIN(id) AS idPrimerDetalle
                 FROM dbo.DetalleFactura
                 GROUP BY idFactura
@@ -68,11 +67,11 @@ BEGIN
                 JOIN dbo.DetalleFactura AS df0
                 ON df0.id = d.idPrimerDetalle
         ),
-        FacturasCobrablesHoy
+        FacturasCobrablesHoy 
         AS
         (
             SELECT
-                cc.idFactura
+                  cc.idFactura
                 , cc.saldoPendiente
                 , cc.fechaVenc
                 , dcc.ValorPorcentual AS porcentajeInteres
@@ -82,26 +81,24 @@ BEGIN
             WHERE @inFechaCorte > cc.fechaVenc
         )
 
-    ----------------------------------------------------------------------
-    -- 2) Insertar interÃ©s del dÃ­a
-    ----------------------------------------------------------------------
-    INSERT INTO dbo.DetalleFactura
+        ----------------------------------------------------------------------
+        -- 2) Insertar interés del día
+        ----------------------------------------------------------------------
+        INSERT INTO dbo.DetalleFactura
         (
-        idFactura
-        , idCC
-        , monto
-        , fecha
-        , descripcion
+              idFactura
+            , idCC
+            , monto
+            , descripcion
         )
-    OUTPUT inserted.idFactura, inserted.monto 
-        INTO @Intereses(idFactura, interesDia)
-    SELECT
-        f.idFactura
-            , 7     -- CC de InteresesMoratorios
+        OUTPUT inserted.idFactura, inserted.monto 
+            INTO @Intereses(idFactura, interesDia)
+        SELECT
+              f.idFactura
+            , 7     -- CC de Intereses Moratorios
             , (f.saldoPendiente * (f.porcentajeInteres / 100.0))
-            , @inFechaCorte
-            , CONCAT('InterÃ©s moratorio generado el dÃ­a ', CONVERT(char(10), @inFechaCorte, 120))
-    FROM FacturasCobrablesHoy AS f;
+            , CONCAT('Interés moratorio generado el día ', CONVERT(char(10), @inFechaCorte, 120))
+        FROM FacturasCobrablesHoy AS f;
 
         ----------------------------------------------------------------------
         -- 3) Actualizar totalFinal de las facturas
@@ -119,21 +116,22 @@ BEGIN
 
         INSERT INTO dbo.DBErrors
         (
-        UserName, Number, State, Severity, [Line],
-        [Procedure], Message, DateTime
+              UserName, Number, State, Severity, [Line],
+              [Procedure], Message, DateTime
         )
-    VALUES
+        VALUES
         (
-            SUSER_SNAME(),
-            ERROR_NUMBER(),
-            ERROR_STATE(),
-            ERROR_SEVERITY(),
-            ERROR_LINE(),
-            ERROR_PROCEDURE(),
-            ERROR_MESSAGE(),
-            SYSDATETIME()
+              SUSER_SNAME(),
+              ERROR_NUMBER(),
+              ERROR_STATE(),
+              ERROR_SEVERITY(),
+              ERROR_LINE(),
+              ERROR_PROCEDURE(),
+              ERROR_MESSAGE(),
+              SYSDATETIME()
         );
 
     END CATCH;
 
 END;
+GO
