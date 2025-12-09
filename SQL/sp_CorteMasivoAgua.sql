@@ -1,139 +1,157 @@
-﻿CREATE OR ALTER PROCEDURE dbo.usp_CorteMasivoAgua
-(
+﻿ALTER   PROCEDURE [dbo].[usp_CorteMasivoAgua]
+      (
       @inFechaCorte   DATE,
       @outResultCode  INT OUTPUT
 )
 AS
 BEGIN
-    SET NOCOUNT ON;
-    SET @outResultCode = 0;
+      SET NOCOUNT ON;
+      SET @outResultCode = 0;
 
-    BEGIN TRY
+      BEGIN TRY
 
-    DECLARE @diasGraciaCorte INT;
+        BEGIN TRAN;
 
-    SELECT 
-        @diasGraciaCorte = CONVERT(INT, ps.valor)
-    FROM dbo.ParametroSistema ps
-    WHERE ps.clave = N'DiasGraciaCorta';
+        DECLARE @diasGraciaCorte INT;
+
+        SELECT
+            @diasGraciaCorte = CONVERT(INT, ps.valor)
+      FROM dbo.ParametroSistema ps
+      WHERE ps.clave = N'DiasGraciaCorta';
+
 
         ----------------------------------------------------------------------
-        -- 1) Identificar facturas vencidas del CC ConsumoAgua
+        -- Tabla variable para almacenar propiedades a cortar
         ----------------------------------------------------------------------
-        ;WITH FacturasVencidas AS
+        DECLARE @ACortar TABLE
         (
-            SELECT 
-                  f.id              AS idFactura,
-                  f.idPropiedad     AS idPropiedad,
-                  f.fechaVenc       AS fechaVenc,
-                  f.totalFinal      AS saldoPendiente
-            FROM dbo.Factura f
-            WHERE f.estado = 1  -- pendiente
-              AND f.totalFinal > 0
-              AND f.fechaVenc < @inFechaCorte
-              AND @inFechaCorte > DATEADD(DAY, @diasGraciaCorte, f.fechaVenc)
-        ),
+            idPropiedad INT
+            ,
+            idFactura INT
+        );
 
         ----------------------------------------------------------------------
-        -- 2) Filtrar SOLO facturas con detalle del CC ConsumoAgua
+        -- Poblar tabla variable con las propiedades que requieren corte
         ----------------------------------------------------------------------
-        FacturasAgua AS
-        (
-            SELECT DISTINCT
-                  fv.idFactura,
-                  fv.idPropiedad,
-                  fv.fechaVenc,
-                  fv.saldoPendiente
-            FROM FacturasVencidas fv
-            JOIN dbo.DetalleFactura df
-                  ON df.idFactura = fv.idFactura
-            JOIN dbo.CC cc
-                  ON cc.id = df.idCC
-            WHERE cc.nombre = N'ConsumoAgua'
-        ),
+        ;WITH
+            FacturasVencidas
+            AS
+            (
+                  SELECT
+                        f.id              AS idFactura,
+                        f.idPropiedad     AS idPropiedad,
+                        f.fechaVenc       AS fechaVenc,
+                        f.totalFinal      AS saldoPendiente
+                  FROM dbo.Factura f
+                  WHERE (f.estado = 1)
+                        AND (f.totalFinal > 0)
+                        AND (f.fechaVenc < @inFechaCorte)
+                        AND (@inFechaCorte > DATEADD(DAY, @diasGraciaCorte, f.fechaVenc))
+            ),
+            FacturasAgua
+            AS
+            (
+                  SELECT DISTINCT
+                        fv.idFactura,
+                        fv.idPropiedad,
+                        fv.fechaVenc,
+                        fv.saldoPendiente
+                  FROM FacturasVencidas fv
+                        INNER JOIN dbo.DetalleFactura df
+                        ON df.idFactura = fv.idFactura
+                        INNER JOIN dbo.CC cc
+                        ON cc.id = df.idCC
+                  WHERE cc.nombre = N'ConsumoAgua'
+            ),
+            FacturaCausa
+            AS
+            (
+                  SELECT
+                        fa.idPropiedad,
+                        fa.idFactura,
+                        ROW_NUMBER() OVER ( --el objetivo es encontrar la factura mas antigua 
+                        PARTITION BY fa.idPropiedad --se divide por propiedad y la numeracion de cada prop comienza en 1
+                        ORDER BY fa.fechaVenc ASC --se ordena ascendente para obtener la mas antigua
+                  ) AS rn
+                  FROM FacturasAgua fa
+            )
+      INSERT INTO @ACortar
+            (
+            idPropiedad
+            , idFactura
+            )
+      SELECT
+            fc.idPropiedad
+            , fc.idFactura
+      FROM FacturaCausa fc
+      WHERE fc.rn = 1;
+
 
         ----------------------------------------------------------------------
-        -- 3) Tomar la factura más antigua por propiedad (la causa)
-        ----------------------------------------------------------------------
-        FacturaCausa AS
-        (
-            SELECT 
-                  fa.idPropiedad,
-                  fa.idFactura,
-                  fa.fechaVenc,
-                  ROW_NUMBER() OVER (PARTITION BY fa.idPropiedad 
-                                    ORDER BY fa.fechaVenc ASC) AS rn
-            FROM FacturasAgua fa
-        ),
-
-        ----------------------------------------------------------------------
-        -- 4) Propiedades cuyo servicio debe cortarse
-        ----------------------------------------------------------------------
-        PropiedadesACortar AS
-        (
-            SELECT 
-                  fc.idPropiedad,
-                  fc.idFactura
-            FROM FacturaCausa fc
-            WHERE fc.rn = 1
-        )
-
-        ----------------------------------------------------------------------
-        -- 5) Insertar orden de corte y marcar aguaCortada = 1
+        -- 1) Insertar orden de corta
         ----------------------------------------------------------------------
         INSERT INTO dbo.OrdenCorta
-        (
-              idPropiedad,
-              idFacturaCausa,
-              fechaGeneracion,
-              estadoCorta
-        )
-        SELECT
-              pc.idPropiedad,
-              pc.idFactura,
-              @inFechaCorte,
-              1
-        FROM PropiedadesACortar pc
-        WHERE NOT EXISTS
+            (
+            idPropiedad
+            , idFacturaCausa
+            , fechaGeneracion
+            , estadoCorta
+            )
+      SELECT
+            ac.idPropiedad
+            , ac.idFactura
+            , @inFechaCorte
+            , 1
+      FROM @ACortar AS ac
+      WHERE NOT EXISTS
         (
             SELECT 1
-            FROM dbo.OrdenCorta oc
-            WHERE oc.idPropiedad = pc.idPropiedad
-              AND oc.estadoCorta = 1 -- ya cortada
+      FROM dbo.OrdenCorta oc
+      WHERE (oc.idPropiedad = ac.idPropiedad)
+            AND (oc.estadoCorta = 1)
         );
 
 
         ----------------------------------------------------------------------
-        -- 6) Marcar propiedad como agua cortada
+        -- 2) Marcar propiedad como agua cortada
         ----------------------------------------------------------------------
         UPDATE p
         SET p.aguaCortada = 1
         FROM dbo.Propiedad p
-        JOIN PropiedadesACortar pc
-            ON pc.idPropiedad = p.id;
+            INNER JOIN @ACortar ac
+            ON ac.idPropiedad = p.id;
 
+
+        COMMIT TRAN;
 
     END TRY
     BEGIN CATCH
+
         SET @outResultCode = 50040;
 
         INSERT INTO dbo.DBErrors
-        (
-              UserName, Number, State, Severity, [Line],
-              [Procedure], Message, DateTime
-        )
-        VALUES
-        (
-              SUSER_SNAME(),
-              ERROR_NUMBER(),
-              ERROR_STATE(),
-              ERROR_SEVERITY(),
-              ERROR_LINE(),
-              ERROR_PROCEDURE(),
-              ERROR_MESSAGE(),
-              SYSDATETIME()
+            (
+            UserName
+            , Number
+            , State
+            , Severity
+            , [Line]
+            , [Procedure]
+            , Message
+            , DateTime
+            )
+      VALUES
+            (
+                  SUSER_SNAME()
+            , ERROR_NUMBER()
+            , ERROR_STATE()
+            , ERROR_SEVERITY()
+            , ERROR_LINE()
+            , ERROR_PROCEDURE()
+            , ERROR_MESSAGE()
+            , SYSDATETIME()
         );
+
     END CATCH;
 
 END;
-GO
